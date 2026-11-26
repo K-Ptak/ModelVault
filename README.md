@@ -9,6 +9,7 @@
 [![Testy](https://github.com/K-Ptak/ModelVault/actions/workflows/ci.yml/badge.svg)](https://github.com/K-Ptak/ModelVault/actions/workflows/ci.yml)
 ![Wersja](https://img.shields.io/badge/wersja-1.0.0-f2a03d)
 ![Status](https://img.shields.io/badge/status-w%20rozwoju-6aa7ff)
+[![Licencja: MIT](https://img.shields.io/badge/licencja-MIT-5ec48a)](LICENSE)
 ![Platforma](https://img.shields.io/badge/platforma-Windows-0078d4)
 ![Electron](https://img.shields.io/badge/Electron-45-47848f?logo=electron&logoColor=white)
 ![three.js](https://img.shields.io/badge/three.js-r187-000000?logo=three.js&logoColor=white)
@@ -34,6 +35,7 @@ więc wszystko nadal działa w Eksploratorze, a aplikacja wykrywa zmiany na bie�
 - [Instalacja](#instalacja)
 - [Jak to działa](#jak-to-działa)
 - [Rozwój](#rozwój)
+- [Licencja](#licencja)
 
 ## Funkcje
 
@@ -201,3 +203,10 @@ Testy na własnych plikach: `MV_REAL_DIR=ścieżka/do/folderu npm test`.
 ### Technologie
 [Electron](https://www.electronjs.org/) · [three.js](https://threejs.org/) · [fflate](https://github.com/101arrowz/fflate) ·
 [electron-builder](https://www.electron.build/) · [electron-updater](https://www.electron.build/auto-update)
+
+## Licencja
+
+Projekt jest udostępniony na licencji [MIT](LICENSE): możesz go używać, modyfikować i rozpowszechniać,
+również komercyjnie, pod warunkiem zachowania informacji o autorze i treści licencji.
+
+© 2026 K-Ptak
