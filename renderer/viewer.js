@@ -7,7 +7,8 @@ import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { GCodeLoader } from 'three/addons/loaders/GCodeLoader.js';
 import { unzipSync } from 'three/addons/libs/fflate.module.js';
 
-const MODEL_COLOR = 0xf2a03d;
+let MODEL_COLOR = 0xf2a03d;
+export function setModelColor(hex) { MODEL_COLOR = new THREE.Color(hex).getHex(); }
 
 // ---------- parsing ----------
 function meshFromGeometry(geo) {
@@ -229,6 +230,12 @@ export class Viewer {
     this.scene.add(this.grid);
     this.setWireframe(this.wire);
     fitCamera(this.camera, this.holder, this.controls);
+  }
+  setColor(hex) {
+    const c = new THREE.Color(hex);
+    this.holder?.traverse((o) => {
+      if ((o.isMesh && !o.material.vertexColors) || ((o.isLine || o.isLineSegments) && !o.userData.travel)) o.material.color.copy(c);
+    });
   }
   resetView() { if (this.holder) fitCamera(this.camera, this.holder, this.controls); }
   setWireframe(on) {

@@ -1,7 +1,7 @@
 {
   "name": "modelvault",
   "productName": "ModelVault",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Menedżer biblioteki modeli 3D do druku (STL, 3MF, OBJ, G-code)",
   "main": "main.js",
   "author": "ModelVault",

@@ -2,7 +2,7 @@
 // Biblioteka = zwykły folder na dysku. Podfoldery = kategorie.
 // Tagi / notatki / status trzymane w <biblioteka>/.modelvault.json (wędruje razem z folderem).
 
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -22,6 +22,60 @@ let watcher = null;
 let selfWriteUntil = 0;
 
 const configPath = () => path.join(app.getPath('userData'), 'config.json');
+const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
+
+// Domyślne ustawienia = wartości z arkusza wyceny użytkownika
+const DEFAULT_SETTINGS = {
+  version: 1,
+  appearance: { modelColor: '#f2a03d', useFilamentColor: true },
+  pricing: {
+    currency: 'zł',
+    printerW: 120,          // moc drukarki w trakcie druku (W)
+    startKWh: 0.03,         // energia na rozgrzanie i start jednego wydruku (kWh)
+    kWhPrice: 1.04,         // cena prądu (zł/kWh)
+    hourRate: 40,           // stawka za mój czas (zł/h)
+    minPerPrint: 10,        // mój czas na jeden wydruk (min)
+    minPerOrder: 15,        // mój czas na całe zamówienie (min)
+    printerPrice: 2359,     // cena drukarki (zł)
+    printerLife: 6000,      // żywotność drukarki (h)
+    servicePerH: 0.2,       // serwis i części (zł/h)
+    buffer: 0.1,            // bufor na nieudane wydruki (ułamek)
+    margin: 0,              // marża (ułamek) -> cena dla klienta
+    roundTo: 0,             // zaokrąglanie ceny dla klienta w górę (zł)
+    estFill: 0.35,          // szacunek z objętości: jaka część bryły to plastik
+    estGramsPerHour: 12,    // szacunek czasu: wydajność drukarki (g/h)
+    defaultFilament: 'f6',
+  },
+  filaments: [
+    { id: 'f1', name: 'PlastSpaw PLA+', color: 'beżowy', hex: '#d8c4a2', type: 'PLA', pricePerKg: 45, density: 1.24 },
+    { id: 'f2', name: 'PlastSpaw PLA+', color: 'zielony', hex: '#3f9c4f', type: 'PLA', pricePerKg: 45, density: 1.24 },
+    { id: 'f3', name: 'SUNLU PLA+', color: 'srebrny', hex: '#b7bcc3', type: 'PLA', pricePerKg: 69.99, density: 1.24 },
+    { id: 'f4', name: 'eSun PLA', color: 'niebieski/czerwony', hex: '#7b5fd6', type: 'PLA', pricePerKg: 47.52, density: 1.24 },
+    { id: 'f5', name: 'SUNLU PETG', color: 'czarny', hex: '#2b2d31', type: 'PETG', pricePerKg: 42.99, density: 1.27 },
+    { id: 'f6', name: 'SUNLU PLA+', color: 'złoty', hex: '#d4a446', type: 'PLA', pricePerKg: 69.99, density: 1.24 },
+    { id: 'f7', name: 'TECBEARS PETG', color: 'biały', hex: '#f1f1ee', type: 'PETG', pricePerKg: 39.99, density: 1.27 },
+  ],
+  order: { name: '', items: [] },
+};
+let settings = null;
+function loadSettings() {
+  let s = null;
+  try { s = JSON.parse(fs.readFileSync(settingsPath(), 'utf8')); } catch {}
+  const d = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  settings = s ? {
+    ...d, ...s,
+    appearance: { ...d.appearance, ...(s.appearance || {}) },
+    pricing: { ...d.pricing, ...(s.pricing || {}) },
+    filaments: Array.isArray(s.filaments) ? s.filaments : d.filaments,
+    order: s.order && Array.isArray(s.order.items) ? s.order : d.order,
+  } : d;
+}
+function saveSettings() {
+  fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+  const tmp = settingsPath() + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(settings, null, 2));
+  fs.renameSync(tmp, settingsPath());
+}
 const thumbDir = () => path.join(app.getPath('userData'), 'thumbs');
 
 // ---------- config ----------
@@ -281,7 +335,8 @@ handle('meta:set', async (rel, patch) => {
   const cur = meta.files[rel] || {};
   const next = { ...cur, ...patch };
   try { next.size = (await fsp.stat(toAbs(rel))).size; } catch {}
-  const empty = !(next.tags && next.tags.length) && !next.notes && !next.status && !next.favorite;
+  if (next.print) { for (const k of Object.keys(next.print)) if (next.print[k] == null || next.print[k] === '') delete next.print[k]; if (!Object.keys(next.print).length) delete next.print; }
+  const empty = !(next.tags && next.tags.length) && !next.notes && !next.status && !next.favorite && !next.print;
   if (empty) delete meta.files[rel]; else meta.files[rel] = next;
   saveMetaSoon();
   return meta.files[rel] || null;
@@ -291,15 +346,27 @@ handle('shell:open', async (rel) => { const e = await shell.openPath(toAbs(rel))
 handle('shell:reveal', async (rel) => { shell.showItemInFolder(toAbs(rel)); return true; });
 handle('shell:openRoot', async () => { if (root) await shell.openPath(root); return true; });
 
-const thumbKey = (rel, mtime, size) => crypto.createHash('sha1').update(`${root}|${rel}|${mtime}|${size}`).digest('hex');
-handle('thumb:get', async (rel, mtime, size) => {
-  try { return 'data:image/png;base64,' + (await fsp.readFile(path.join(thumbDir(), thumbKey(rel, mtime, size) + '.png'))).toString('base64'); }
+const thumbKey = (rel, mtime, size, v) => crypto.createHash('sha1').update(`${root}|${rel}|${mtime}|${size}|${v || ''}`).digest('hex');
+handle('thumb:get', async (rel, mtime, size, v) => {
+  try { return 'data:image/png;base64,' + (await fsp.readFile(path.join(thumbDir(), thumbKey(rel, mtime, size, v) + '.png'))).toString('base64'); }
   catch { return null; }
 });
-handle('thumb:put', async (rel, mtime, size, dataUrl) => {
+handle('thumb:put', async (rel, mtime, size, v, dataUrl) => {
   await fsp.mkdir(thumbDir(), { recursive: true });
-  await fsp.writeFile(path.join(thumbDir(), thumbKey(rel, mtime, size) + '.png'), Buffer.from(dataUrl.split(',')[1], 'base64'));
+  await fsp.writeFile(path.join(thumbDir(), thumbKey(rel, mtime, size, v) + '.png'), Buffer.from(dataUrl.split(',')[1], 'base64'));
   return true;
+});
+handle('thumb:clear', async () => { await fsp.rm(thumbDir(), { recursive: true, force: true }); return true; });
+
+handle('settings:get', async () => settings);
+handle('settings:set', async (next) => { settings = next; saveSettings(); return true; });
+handle('settings:defaults', async () => JSON.parse(JSON.stringify(DEFAULT_SETTINGS)));
+handle('clipboard:write', async (text) => { clipboard.writeText(String(text)); return true; });
+handle('file:save', async (defaultName, content) => {
+  const r = await dialog.showSaveDialog(win, { defaultPath: defaultName, filters: [{ name: 'CSV', extensions: ['csv'] }] });
+  if (r.canceled || !r.filePath) return null;
+  await fsp.writeFile(r.filePath, '\ufeff' + content, 'utf8');
+  return r.filePath;
 });
 handle('image:read', async (rel) => {
   const abs = toAbs(rel);
@@ -341,6 +408,7 @@ app.commandLine.appendSwitch('enable-unsafe-swiftshader');
 
 app.whenReady().then(async () => {
   loadConfig();
+  loadSettings();
   const r = process.env.MV_ROOT || config.root;
   if (r && fs.existsSync(r)) await setRoot(r);
   createWindow();

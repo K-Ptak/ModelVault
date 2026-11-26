@@ -30,11 +30,13 @@
       <option value="size">Największe</option><option value="ext">Format</option>
     </select>
     <input id="zoom" type="range" min="120" max="300" value="180" title="Rozmiar miniatur">
+    <button class="icon-btn big" id="settingsBtn" title="Ustawienia (Ctrl+,)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
   </header>
 
   <div class="layout">
     <aside class="sidebar">
       <nav class="section" id="specials"></nav>
+      <div class="nav-item order-nav" id="orderNav"><span class="ico">∑</span>Wycena zamówienia<span class="count" id="orderCount">0</span></div>
       <div class="section-title">
         <span>Foldery</span>
         <button class="icon-btn" id="newFolderBtn" title="Nowy folder w zaznaczonym">+</button>
@@ -47,6 +49,7 @@
     <main class="main" id="main">
       <div class="crumbs" id="crumbs"></div>
       <div class="grid" id="grid"></div>
+      <div class="order" id="order" hidden></div>
       <div class="empty" id="empty" hidden></div>
       <div class="drop-overlay" id="dropOverlay" hidden><div>Upuść, aby skopiować do <b id="dropTarget"></b></div></div>
     </main>

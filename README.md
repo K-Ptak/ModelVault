@@ -20,6 +20,31 @@ Bez instalacji. Przy pierwszym starcie wskaż folder z modelami.
   szacowana waga w PLA przy 100% wypełnienia (górna granica, przydatna do wyceny).
 - Inne pliki (STEP, SCAD, F3D, BLEND…) są na liście, ale bez podglądu 3D.
 
+## Wycena wydruków
+Logika jest taka sama jak w arkuszu wyceny: filament (cena/kg), prąd (moc × czas + energia
+na start każdego wydruku), eksploatacja drukarki (cena / żywotność + serwis), Twój czas
+(na każdy wydruk + na całe zamówienie), bufor na nieudane wydruki, opcjonalnie marża
+i zaokrąglenie ceny dla klienta.
+
+- **Skąd brane są gramy i czas:**
+  1. wartości wpisane ręcznie,
+  2. dane ze slicera: komentarze w G-code (PrusaSlicer, OrcaSlicer, Bambu Studio, Cura)
+     albo `slice_info.config` w pociętym 3MF (Bambu / Orca),
+  3. szacunek z objętości modelu (oznaczony „~”, parametry w ustawieniach).
+- **Wycena modelu** jest w panelu po prawej. **Wycena zamówienia** to osobny widok
+  (pozycja „Wycena zamówienia” po lewej): modele z biblioteki plus pozycje ręczne, liczba
+  wydruków, zestawienie materiałów, rozbicie kosztów, kopiowanie podsumowania do schowka
+  i eksport CSV (Excel).
+- **Biblioteka filamentów** jest w ustawieniach: nazwa, kolor, typ, cena za kg, gęstość
+  i kolor do podglądu 3D. Jeden filament jest domyślny.
+- Ustawienia aplikacji, filamenty i bieżąca wycena są zapisane w `%APPDATA%\ModelVault\settings.json`.
+  Gramy, czas i filament przypisany do modelu trafiają do `.modelvault.json` w bibliotece.
+
+## Ustawienia (Ctrl+,)
+- **Wygląd:** kolor modelu w podglądzie i na miniaturach, opcja użycia koloru przypisanego filamentu.
+- **Wycena:** wszystkie parametry kosztów, domyślny filament, waluta.
+- **Filamenty:** biblioteka filamentów.
+
 ## Skróty
 | Skrót | Akcja |
 |---|---|
@@ -31,6 +56,7 @@ Bez instalacji. Przy pierwszym starcie wskaż folder z modelami.
 | F | ulubione |
 | Ctrl+F | szukaj (nazwa, ścieżka, tagi, notatki) |
 | Ctrl+A | zaznacz wszystko |
+| Ctrl+, | ustawienia |
 | prawy przycisk | menu kontekstowe (pliki i foldery) |
 
 Pliki przeciągnięte z Eksploratora do okna są **kopiowane** do bieżącego folderu.
