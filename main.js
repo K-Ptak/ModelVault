@@ -70,6 +70,7 @@ const DEFAULT_SETTINGS = {
   thumbs: { preset: 'iso' },
   backup: { auto: true, keep: 14, last: 0 },
   updates: { auto: true },
+  onboardingDone: false,
   filaments: [
     { id: 'f1', name: 'PlastSpaw PLA+', color: 'beżowy', hex: '#d8c4a2', type: 'PLA', pricePerKg: 45, density: 1.24, spoolWeight: 1000, remaining: null },
     { id: 'f2', name: 'PlastSpaw PLA+', color: 'zielony', hex: '#3f9c4f', type: 'PLA', pricePerKg: 45, density: 1.24, spoolWeight: 1000, remaining: null },

@@ -5,7 +5,9 @@ Pobierz z [Releases](https://github.com/K-Ptak/ModelVault/releases):
 - **`ModelVault-Setup-x.y.z.exe`** – instalator: skrót w menu Start i na pulpicie, **automatyczne aktualizacje**,
 - **`ModelVault-x.y.z-win-x64.zip`** – wersja przenośna: rozpakuj i uruchom `ModelVault.exe`, bez aktualizacji automatycznych.
 
-Przy pierwszym starcie wskaż folder z modelami. Windows SmartScreen może ostrzec o nieznanym
+Przy pierwszym starcie kreator przeprowadzi Cię przez konfigurację: folder z modelami, domyślny slicer,
+drukarkę i cenę prądu, filamenty, stawkę za Twój czas i marżę (z przykładową wyceną na żywo), wygląd
+oraz opcjonalne automatyzacje. Kreator uruchomisz ponownie w Ustawienia → O programie. Windows SmartScreen może ostrzec o nieznanym
 wydawcy, bo aplikacja nie jest podpisana: „Więcej informacji” → „Uruchom mimo to”.
 
 ## Jak to działa

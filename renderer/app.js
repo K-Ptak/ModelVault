@@ -1878,12 +1878,231 @@ async function tabBackup(body) {
 async function tabAbout(body) {
   const v = await api.appVersion().catch(() => ({ version: '?' }));
   body.innerHTML = `<div class="about"><div class="logo big"></div><div><div class="vtitle">ModelVault ${esc(v.version)}</div><div class="vsub">Menedżer biblioteki modeli 3D z wyceną wydruków</div></div></div>
+    <div class="label">Konfiguracja</div>
+    <button class="btn" id="abOnb">Uruchom kreator konfiguracji ponownie</button>
     <div class="label">Aktualizacje</div>
     ${v.updater ? `<label class="check"><input type="checkbox" id="upAuto" ${S.updates.auto ? 'checked' : ''}> Sprawdzaj aktualizacje przy starcie</label>
       <button class="btn" id="upNow">Sprawdź teraz</button> <span class="vsub" id="upMsg"></span>`
       : `<p class="hint">${v.portable ? 'To wersja przenośna (ZIP) – aktualizacje automatyczne działają w wersji instalowanej.' : 'Aktualizacje automatyczne działają w zainstalowanej wersji na Windows.'} Nowe wersje znajdziesz na GitHubie w zakładce Releases.</p>`}`;
+  body.querySelector('#abOnb').onclick = () => { $('#modalBack').hidden = true; $('#modal').innerHTML = ''; openOnboarding(); };
   const a = body.querySelector('#upAuto'); if (a) a.onchange = (e) => { S.updates.auto = e.target.checked; saveSettings(); };
   const n = body.querySelector('#upNow'); if (n) n.onclick = async () => { body.querySelector('#upMsg').textContent = 'Sprawdzam…'; await safe(() => api.updateCheck()); setTimeout(() => { const m = body.querySelector('#upMsg'); if (m) m.textContent = updateState && updateState.state === 'available' ? `Dostępna ${updateState.version}` : updateState && updateState.state === 'none' ? 'Masz najnowszą wersję' : ''; }, 2500); };
+}
+
+// ---------- kreator pierwszego uruchomienia ----------
+// Moc to średni pobór w trakcie druku PLA, cena – orientacyjna cena zakupu w PL. Wszystko da się poprawić.
+const PRINTER_PRESETS = [
+  { id: 'a1mini', name: 'Bambu Lab A1 mini', w: 70, price: 1100 },
+  { id: 'a1', name: 'Bambu Lab A1', w: 95, price: 1700 },
+  { id: 'p1s', name: 'Bambu Lab P1S', w: 110, price: 2700 },
+  { id: 'x1c', name: 'Bambu Lab X1 Carbon', w: 120, price: 4500 },
+  { id: 'mk4s', name: 'Prusa MK4S', w: 80, price: 4300 },
+  { id: 'coreone', name: 'Prusa CORE One', w: 100, price: 5000 },
+  { id: 'ender3v3', name: 'Creality Ender 3 V3 (SE/KE)', w: 120, price: 900 },
+  { id: 'k1c', name: 'Creality K1C', w: 140, price: 1900 },
+  { id: 'neptune4', name: 'Elegoo Neptune 4 / 4 Pro', w: 120, price: 1000 },
+  { id: 'other', name: 'Inna drukarka', w: null, price: null },
+];
+function openOnboarding() {
+  if (document.getElementById('onb')) return;
+  const el = document.createElement('div');
+  el.id = 'onb';
+  el.className = 'onb';
+  document.body.appendChild(el);
+  const p = P();
+  const steps = ['welcome', 'library', 'slicer', 'printer', 'filaments', 'pricing', 'look', 'extras', 'done'];
+  const titles = { welcome: 'Witaj', library: 'Biblioteka', slicer: 'Slicer', printer: 'Drukarka i prąd', filaments: 'Filamenty', pricing: 'Twój czas i cena', look: 'Wygląd', extras: 'Automatyzacje', done: 'Gotowe' };
+  let i = 0;
+  let printerSel = S.onboardingPrinter || null;
+  const c = () => esc(cur());
+  const num = (id, val, step = 'any', w = 110) => `<input type="number" step="${step}" min="0" id="${id}" value="${val}" style="width:${w}px">`;
+
+  function example() {
+    const fl = defaultFilament();
+    const r = priceItems([{ grams: 50, minutes: 180, filament: fl, qty: 1 }], P());
+    return `<div class="onb-example"><div class="ex-h">Przykład: model 50 g, 3 h druku${fl ? `, ${esc(filLabel(fl))}` : ''}</div>
+      <div class="ex-row"><span>filament</span><b>${fmtMoney(r.filament, cur())}</b></div>
+      <div class="ex-row"><span>prąd + drukarka</span><b>${fmtMoney(r.energy + r.wear, cur())}</b></div>
+      <div class="ex-row"><span>Twój czas</span><b>${fmtMoney(r.labor, cur())}</b></div>
+      <div class="ex-row"><span>bufor</span><b>${fmtMoney(r.buffer, cur())}</b></div>
+      <div class="ex-row tot"><span>koszt własny</span><b>${fmtMoney(r.cost, cur())}</b></div>
+      ${P().margin > 0 || P().roundTo > 0 ? `<div class="ex-row price"><span>cena dla klienta</span><b>${fmtMoney(r.price, cur())}</b></div>` : ''}</div>`;
+  }
+
+  const body = {
+    welcome: () => `<div class="onb-hero"><div class="logo big"></div><h1>Witaj w ModelVault</h1>
+      <p>Skonfigurujmy kilka rzeczy, żeby wyceny od razu miały sens. To zajmie około 2 minut.<br>Każdy krok możesz pominąć, a wszystko zmienisz później w Ustawieniach (Ctrl+,).</p></div>`,
+    library: () => `<h2>Gdzie trzymasz modele?</h2>
+      <p class="lead">Wskaż folder z plikami STL / 3MF / G-code. Podfoldery staną się kategoriami, a pliki zostają tam, gdzie są: możesz je dalej przenosić w Eksploratorze.</p>
+      <div class="onb-path ${lib ? 'ok' : ''}">${lib ? `✓ ${esc(lib.root)}<small>${lib.files.length} modeli · ${lib.folders.length} folderów</small>` : 'Nie wybrano folderu'}</div>
+      <button class="btn primary" id="oLib">${lib ? 'Zmień folder…' : 'Wybierz folder…'}</button>`,
+    slicer: () => {
+      const list = (S.slicers.list || []).filter((x) => x.available);
+      return `<h2>Którego slicera używasz?</h2>
+      <p class="lead">Domyślny slicer otwiera modele po dwukliku i klawiszem Enter. Pozostałe zaznaczone będą dostępne w menu „Otwórz w…”.</p>
+      ${list.length ? `<div class="onb-cards">${list.map((x) => `<label class="onb-card ${S.slicers.default === x.id ? 'on' : ''}" data-def="${esc(x.id)}">
+          <input type="radio" name="osl" ${S.slicers.default === x.id ? 'checked' : ''}><b>${esc(x.name)}</b><small title="${esc(x.path)}">${esc(x.path)}</small>
+          <span class="onb-show"><input type="checkbox" data-en="${esc(x.id)}" ${x.enabled ? 'checked' : ''}> pokazuj w menu</span></label>`).join('')}
+          <label class="onb-card ${S.slicers.default === 'system' ? 'on' : ''}" data-def="system"><input type="radio" name="osl" ${S.slicers.default === 'system' ? 'checked' : ''}><b>Program domyślny systemu</b><small>to, co Windows otwiera dla danego pliku</small></label></div>`
+        : `<div class="onb-path">Nie znalazłem slicera w typowych miejscach.</div>`}
+      <div class="btns" style="justify-content:flex-start"><button class="btn" id="oSlAdd">+ Wskaż inny slicer (.exe)…</button><button class="btn" id="oSlDet">Wykryj ponownie</button></div>`;
+    },
+    printer: () => `<h2>Jaką masz drukarkę?</h2>
+      <p class="lead">Na tej podstawie liczę prąd i zużycie drukarki. Wartości są orientacyjne, popraw je, jeśli znasz swoje.</p>
+      <div class="onb-chips">${PRINTER_PRESETS.map((x) => `<button class="chip ${printerSel === x.id ? 'on' : ''}" data-pr="${x.id}">${esc(x.name)}</button>`).join('')}</div>
+      <div class="fields onb-fields">
+        <label class="fld"><span>Średni pobór mocy w trakcie druku</span><span class="inp">${num('oW', p.printerW, '1')}<em>W</em></span></label>
+        <label class="fld"><span>Cena drukarki</span><span class="inp">${num('oPP', p.printerPrice, '1')}<em>${c()}</em></span></label>
+        <label class="fld"><span>Ile godzin wytrzyma, zanim się „zwróci” (żywotność)</span><span class="inp">${num('oPL', p.printerLife, '100')}<em>h</em></span></label>
+        <label class="fld"><span>Serwis i części: dysze, płyta PEI, paski</span><span class="inp">${num('oSv', p.servicePerH, '0.05')}<em>${c()}/h</em></span></label>
+        <label class="fld"><span>Cena prądu z rachunku (brutto, z dystrybucją)</span><span class="inp">${num('oKwh', p.kWhPrice, '0.01')}<em>${c()}/kWh</em></span></label>
+      </div>
+      <p class="hint">Pobór mocy sprawdzisz gniazdkiem z pomiarem energii. Drukarka z obudową i grzaną komorą pobiera więcej.</p>`,
+    filaments: () => `<h2>Twoje filamenty</h2>
+      <p class="lead">Cena za kilogram decyduje o koszcie materiału, a kolor pomaga dopasować szpule do modeli wielokolorowych. Gwiazdka oznacza filament domyślny.</p>
+      <table class="ftable onb-ft"><thead><tr><th></th><th>Nazwa</th><th>Kolor</th><th>Typ</th><th class="r">Cena/kg</th><th title="Domyślny">★</th><th></th></tr></thead><tbody>
+      ${S.filaments.map((fl, k) => `<tr data-k="${k}"><td><input type="color" data-f="hex" value="${esc(fl.hex || '#888888')}"></td><td><input data-f="name" value="${esc(fl.name)}"></td><td><input data-f="color" value="${esc(fl.color)}"></td>
+        <td><select data-f="type">${['PLA', 'PLA+', 'PETG', 'ABS', 'ASA', 'TPU', 'PA', 'PC', 'Inny'].map((t) => `<option ${t === fl.type ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
+        <td><input data-f="pricePerKg" type="number" step="0.01" class="num" value="${fl.pricePerKg}"></td><td><input type="radio" name="ofdef" ${p.defaultFilament === fl.id ? 'checked' : ''}></td><td><button class="icon-btn" data-del>✕</button></td></tr>`).join('')}
+      </tbody></table>
+      <div class="btns" style="justify-content:flex-start"><button class="btn" id="oFAdd">+ Dodaj filament</button><button class="btn" id="oFClear">Wyczyść listę i zacznij od zera</button></div>`,
+    pricing: () => `<h2>Twój czas i cena dla klienta</h2>
+      <p class="lead">Ile liczysz za swoją pracę i jaki margines bezpieczeństwa chcesz mieć. Przykład po prawej przelicza się na żywo.</p>
+      <div class="onb-split"><div class="fields onb-fields">
+        <label class="fld"><span>Stawka za Twój czas</span><span class="inp">${num('oRate', p.hourRate, '1', 90)}<em>${c()}/h</em></span></label>
+        <label class="fld"><span>Czas na jeden wydruk (przygotowanie, zdjęcie z płyty, obróbka)</span><span class="inp">${num('oMp', p.minPerPrint, '1', 90)}<em>min</em></span></label>
+        <label class="fld"><span>Czas na całe zamówienie (kontakt, pakowanie)</span><span class="inp">${num('oMo', p.minPerOrder, '1', 90)}<em>min</em></span></label>
+        <label class="fld"><span>Bufor na nieudane wydruki</span><span class="inp">${num('oBuf', +(p.buffer * 100).toFixed(2), '1', 90)}<em>%</em></span></label>
+        <label class="fld"><span>Marża (zarobek ponad koszt)</span><span class="inp">${num('oMar', +(p.margin * 100).toFixed(2), '1', 90)}<em>%</em></span></label>
+        <label class="fld"><span>Zaokrąglaj cenę dla klienta w górę do</span><span class="inp"><select id="oRnd">${[0, 1, 5, 10].map((v) => `<option value="${v}" ${+p.roundTo === v ? 'selected' : ''}>${v ? v + ' ' + c() : 'nie zaokrąglaj'}</option>`).join('')}</select></span></label>
+        <label class="fld"><span>Waluta</span><span class="inp"><input id="oCur" value="${c()}" style="width:70px"></span></label>
+      </div><div id="oEx">${example()}</div></div>
+      <p class="hint">Drukujesz tylko dla siebie? Ustaw stawkę i marżę na 0, a zobaczysz czysty koszt materiału, prądu i drukarki.</p>`,
+    look: () => {
+      const presets = ['#f2a03d', '#e9e9e4', '#9aa3ad', '#3f9c4f', '#4a86e8', '#d9534f', '#8e6cd8', '#2b2d31'];
+      return `<h2>Wygląd</h2>
+      <p class="lead">Kolor, w jakim pokazuję modele bez przypisanego filamentu, i kąt kamery na miniaturach.</p>
+      <div class="label">Kolor modelu</div>
+      <div class="row"><input type="color" id="oCol" value="${esc(S.appearance.modelColor)}"><div class="presets">${presets.map((x) => `<button class="preset ${x === S.appearance.modelColor ? 'on' : ''}" data-c="${x}" style="background:${x}"></button>`).join('')}</div></div>
+      <label class="check"><input type="checkbox" id="oFilCol" ${S.appearance.useFilamentColor ? 'checked' : ''}> Pokazuj model w kolorze przypisanego filamentu</label>
+      <div class="label">Kąt kamery na miniaturach</div>
+      <div class="seg" id="oPre">${[['iso', 'Izometryczny'], ['front', 'Przód'], ['side', 'Bok'], ['top', 'Góra']].map(([k, v]) => `<button data-p="${k}" class="${S.thumbs.preset === k ? 'on' : ''}">${v}</button>`).join('')}</div>`;
+    },
+    extras: () => `<h2>Automatyzacje (opcjonalnie)</h2>
+      <div class="onb-opt"><label class="check"><input type="checkbox" id="oInbox" ${S.inbox.enabled ? 'checked' : ''}> <b>Zbieraj nowe modele z folderu Pobrane</b></label>
+        <p class="hint">Nowe pliki STL, 3MF i inne modele (także z archiwów ZIP z Printables) trafią do folderu „${esc(S.inbox.target)}” w bibliotece. Stamtąd przeciągasz je do kategorii.</p>
+        <label class="check sub">Pliki z Pobranych: <select id="oInMode"><option value="move" ${S.inbox.mode === 'move' ? 'selected' : ''}>przenoś</option><option value="copy" ${S.inbox.mode === 'copy' ? 'selected' : ''}>kopiuj</option></select></label></div>
+      <div class="onb-opt"><label class="check"><input type="checkbox" id="oStock" ${S.stock.onModelPrinted ? 'checked' : ''}> <b>Odejmuj filament z magazynu po oznaczeniu modelu jako „Wydrukowane”</b></label>
+        <p class="hint">Stan szpul ustawisz w widoku „Magazyn filamentów”. Każde odjęcie można cofnąć.</p></div>
+      <div class="onb-opt"><label class="check"><input type="checkbox" id="oBk" ${S.backup.auto ? 'checked' : ''}> <b>Automatyczna kopia zapasowa raz dziennie</b></label>
+        <p class="hint">Ustawienia, filamenty, klienci, zamówienia oraz tagi i notatki. Same pliki modeli nie są kopiowane.</p></div>`,
+    done: () => {
+      const d = defaultSlicer();
+      return `<div class="onb-hero"><div class="onb-check">✓</div><h1>Gotowe!</h1>
+      <div class="onb-summary">
+        <div><span>Biblioteka</span><b>${lib ? esc(lib.root) : '— (wybierzesz później)'}</b></div>
+        <div><span>Domyślny slicer</span><b>${d ? esc(d.name) : 'program domyślny systemu'}</b></div>
+        <div><span>Drukarka</span><b>${printerSel ? esc(PRINTER_PRESETS.find((x) => x.id === printerSel).name) : 'własne ustawienia'} · ${P().printerW} W</b></div>
+        <div><span>Filamenty</span><b>${S.filaments.length} w bibliotece, domyślny: ${esc(filLabel(defaultFilament()))}</b></div>
+        <div><span>Twój czas</span><b>${P().hourRate} ${c()}/h · marża ${Math.round(P().margin * 100)}%</b></div>
+      </div>
+      <p class="lead" style="margin-top:18px">Wskazówka: dwuklik otwiera model w slicerze, a prawy przycisk pokazuje wszystkie opcje.<br>Kreator uruchomisz ponownie w Ustawienia → O programie.</p></div>`;
+    },
+  };
+
+  const bind = {
+    library: () => { $('#oLib').onclick = async () => { await chooseLibrary(); draw(); }; },
+    slicer: () => {
+      el.querySelectorAll('[data-def]').forEach((card) => card.querySelector('input[type=radio]').onchange = () => { S.slicers.default = card.dataset.def; const x = S.slicers.list.find((y) => y.id === card.dataset.def); if (x) x.enabled = true; draw(); });
+      el.querySelectorAll('[data-en]').forEach((cb) => { cb.onclick = (e) => e.stopPropagation(); cb.onchange = () => { const x = S.slicers.list.find((y) => y.id === cb.dataset.en); x.enabled = cb.checked; if (!x.enabled && S.slicers.default === x.id) S.slicers.default = 'system'; draw(); }; });
+      $('#oSlAdd').onclick = async () => {
+        const path = await api.slicersPick(); if (!path) return;
+        const name = await promptModal('Nazwa slicera', baseName(path.replace(/\\/g, '/')).replace(/\.(exe|app)$/i, ''), 'Dodaj');
+        if (!name) return;
+        const id = 'custom-' + Date.now().toString(36);
+        S.slicers.list = [...(S.slicers.list || []), { id, name, path, enabled: true, available: true, custom: true }];
+        S.slicers.default = id; draw();
+      };
+      $('#oSlDet').onclick = async () => { await api.setSettings(S); const r = await safe(() => api.slicersDetect()); if (r) { S.slicers = r; draw(); } };
+    },
+    printer: () => {
+      el.querySelectorAll('[data-pr]').forEach((b) => b.onclick = () => {
+        printerSel = b.dataset.pr;
+        const pr = PRINTER_PRESETS.find((x) => x.id === printerSel);
+        if (pr.w) { p.printerW = pr.w; p.printerPrice = pr.price; }
+        draw();
+      });
+      const f = (id, k) => { $(id).oninput = (e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v) && v >= 0) p[k] = v; }; };
+      f('#oW', 'printerW'); f('#oPP', 'printerPrice'); f('#oPL', 'printerLife'); f('#oSv', 'servicePerH'); f('#oKwh', 'kWhPrice');
+    },
+    filaments: () => {
+      el.querySelectorAll('tbody tr').forEach((tr) => {
+        const fl = S.filaments[+tr.dataset.k];
+        tr.querySelectorAll('[data-f]').forEach((inp) => {
+          inp[inp.type === 'color' || inp.tagName === 'SELECT' ? 'onchange' : 'oninput'] = () => { const k = inp.dataset.f; fl[k] = k === 'pricePerKg' ? parseFloat(inp.value) || 0 : inp.value; };
+        });
+        tr.querySelector('input[type=radio]').onchange = () => { p.defaultFilament = fl.id; };
+        tr.querySelector('[data-del]').onclick = () => { if (S.filaments.length <= 1) return toast('Zostaw co najmniej jeden filament', true); S.filaments = S.filaments.filter((x) => x !== fl); if (p.defaultFilament === fl.id) p.defaultFilament = S.filaments[0].id; draw(); };
+      });
+      $('#oFAdd').onclick = () => { S.filaments.push({ id: 'f' + Date.now().toString(36), name: 'Nowy filament', color: 'kolor', hex: '#888888', type: 'PLA', pricePerKg: 70, density: 1.24, spoolWeight: 1000, remaining: null }); draw(); el.querySelector('tbody tr:last-child input[data-f="name"]')?.select(); };
+      $('#oFClear').onclick = () => { const id = 'f' + Date.now().toString(36); S.filaments = [{ id, name: 'Mój filament', color: 'biały', hex: '#f1f1ee', type: 'PLA', pricePerKg: 70, density: 1.24, spoolWeight: 1000, remaining: null }]; p.defaultFilament = id; draw(); el.querySelector('tbody input[data-f="name"]')?.select(); };
+    },
+    pricing: () => {
+      const upd = () => { $('#oEx').innerHTML = example(); };
+      const f = (id, k, pct = false) => { $(id).oninput = (e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v) && v >= 0) { p[k] = pct ? v / 100 : v; upd(); } }; };
+      f('#oRate', 'hourRate'); f('#oMp', 'minPerPrint'); f('#oMo', 'minPerOrder'); f('#oBuf', 'buffer', true); f('#oMar', 'margin', true);
+      $('#oRnd').onchange = (e) => { p.roundTo = +e.target.value; upd(); };
+      $('#oCur').oninput = (e) => { p.currency = e.target.value.trim() || 'zł'; upd(); };
+    },
+    look: () => {
+      const setC = (v) => { S.appearance.modelColor = v; draw(); };
+      $('#oCol').onchange = (e) => setC(e.target.value);
+      el.querySelectorAll('.preset').forEach((b) => b.onclick = () => setC(b.dataset.c));
+      $('#oFilCol').onchange = (e) => { S.appearance.useFilamentColor = e.target.checked; };
+      el.querySelectorAll('#oPre [data-p]').forEach((b) => b.onclick = () => { S.thumbs.preset = b.dataset.p; draw(); });
+    },
+    extras: () => {
+      $('#oInbox').onchange = (e) => { S.inbox.enabled = e.target.checked; if (e.target.checked) S.inbox.enabledAt = Date.now(); };
+      $('#oInMode').onchange = (e) => { S.inbox.mode = e.target.value; };
+      $('#oStock').onchange = (e) => { S.stock.onModelPrinted = e.target.checked; };
+      $('#oBk').onchange = (e) => { S.backup.auto = e.target.checked; };
+    },
+  };
+
+  async function finish() {
+    S.onboardingDone = true;
+    S.onboardingPrinter = printerSel;
+    await api.setSettings(S);
+    await api.inboxApply().catch(() => {});
+    el.remove();
+    setModelColor(S.appearance.modelColor);
+    thumbs.clear();
+    renderAll();
+    toast('Konfiguracja zapisana');
+  }
+  function draw() {
+    const s = steps[i];
+    const pct = Math.round(i / (steps.length - 1) * 100);
+    el.innerHTML = `<div class="onb-box">
+      <div class="onb-side">${steps.map((k, j) => `<div class="onb-step ${j === i ? 'cur' : j < i ? 'done' : ''}" data-j="${j}"><span>${j < i ? '✓' : j + 1}</span>${titles[k]}</div>`).join('')}</div>
+      <div class="onb-main"><div class="onb-progress"><i style="width:${pct}%"></i></div>
+        <div class="onb-body">${body[s]()}</div>
+        <div class="onb-nav">${i > 0 && s !== 'done' ? '<button class="btn" id="oBack">← Wstecz</button>' : '<span></span>'}<span style="flex:1"></span>
+          ${s === 'welcome' ? '<button class="btn" id="oSkipAll">Pomiń konfigurację</button>' : ''}
+          ${s !== 'done' && s !== 'welcome' ? '<button class="btn" id="oSkip">Pomiń krok</button>' : ''}
+          <button class="btn primary" id="oNext">${s === 'welcome' ? 'Zaczynamy →' : s === 'done' ? 'Przejdź do biblioteki' : 'Dalej →'}</button></div></div></div>`;
+    (bind[s] || (() => {}))();
+    const go = (d) => { i = Math.max(0, Math.min(steps.length - 1, i + d)); draw(); };
+    const b = $('#oBack'); if (b) b.onclick = () => go(-1);
+    const sk = $('#oSkip'); if (sk) sk.onclick = () => go(1);
+    const sa = $('#oSkipAll'); if (sa) sa.onclick = () => finish();
+    $('#oNext').onclick = () => (s === 'done' ? finish() : go(1));
+    el.querySelectorAll('.onb-step').forEach((x) => x.onclick = () => { const j = +x.dataset.j; if (j <= i) { i = j; draw(); } });
+  }
+  (async () => {
+    if (!S.slicers.list || !S.slicers.list.length) { try { await api.setSettings(S); S.slicers = await api.slicersDetect(); } catch {} }
+    draw();
+  })();
 }
 
 function applyAppearance(colorChanged) {
@@ -2273,5 +2492,6 @@ $('#stockNav').onclick = () => S && setView({ special: 'stock' });
   if (!S.slicers || !S.slicers.list) { try { S.slicers = await api.slicersDetect(); } catch {} }
   setModelColor(S.appearance.modelColor);
   await reload();
+  if (!S.onboardingDone) openOnboarding();
 })();
-window.__mv = { st, sel, selectCard, reload, setView, openSettings, addToOrder, get lib() { return lib; }, get S() { return S; } };
+window.__mv = { openOnboarding, st, sel, selectCard, reload, setView, openSettings, addToOrder, get lib() { return lib; }, get S() { return S; } };
