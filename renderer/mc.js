@@ -96,9 +96,18 @@ export function parse3MFColors(buffer) {
     for (let i = 0; i < n; i++) colors.push(ec[i] || fc[i] || null);
   }
 
-  const bambuObj = new Map(), bambuPart = new Map();
+  const bambuObj = new Map(), bambuPart = new Map(), objPlate = new Map();
   const ms = get('Metadata/model_settings.config');
   if (ms) {
+    for (const pm of ms.matchAll(/<plate>([\s\S]*?)<\/plate>/g)) {
+      const idm = pm[1].match(/key="plater_id"\s+value="(\d+)"/);
+      const pid = idm ? +idm[1] : null;
+      if (pid == null) continue;
+      for (const mi of pm[1].matchAll(/<model_instance>([\s\S]*?)<\/model_instance>/g)) {
+        const om = mi[1].match(/key="object_id"\s+value="(\d+)"/);
+        if (om && !objPlate.has(om[1])) objPlate.set(om[1], pid);
+      }
+    }
     for (const m of ms.matchAll(/<object\s+id="(\d+)"[^>]*>([\s\S]*?)<\/object>/g)) {
       const id = m[1], body = m[2];
       for (const p of body.matchAll(/<part\s+([^>]*)>([\s\S]*?)<\/part>/g)) {
@@ -137,6 +146,12 @@ export function parse3MFColors(buffer) {
   const si = get('Metadata/slice_info.config');
   if (si) {
     const perExt = new Map(); let sec = 0, g = 0, any = false;
+    const platesInfo = [];
+    for (const pm of si.matchAll(/<plate>([\s\S]*?)<\/plate>/g)) {
+      const b = pm[1];
+      const ix = b.match(/key="index"\s+value="(\d+)"/), pr = b.match(/key="prediction"\s+value="([\d.]+)"/), wt = b.match(/key="weight"\s+value="([\d.]+)"/);
+      if (ix) platesInfo.push({ index: +ix[1], minutes: pr ? +pr[1] / 60 : null, grams: wt ? +wt[1] : null });
+    }
     for (const m of si.matchAll(/key="prediction"\s+value="([\d.]+)"/g)) { sec += +m[1]; any = true; }
     for (const m of si.matchAll(/key="weight"\s+value="([\d.]+)"/g)) { g += +m[1]; any = true; }
     for (const m of si.matchAll(/<filament\s+([^>]*)\/?>/g)) {
@@ -148,7 +163,7 @@ export function parse3MFColors(buffer) {
       perExt.set(id, cur);
       any = true;
     }
-    if (any) slice = { minutes: sec ? sec / 60 : null, grams: g || null, perExt };
+    if (any) slice = { minutes: sec ? sec / 60 : null, grams: g || null, perExt, plates: platesInfo };
   }
 
   // --- geometria ---
@@ -208,7 +223,7 @@ export function parse3MFColors(buffer) {
   const slots = new Map();
   const slotFor = (key, init) => {
     let s = slots.get(key);
-    if (!s) { s = { key, tris: 0, area: 0, vol: 0, paintArea: 0, zMin: Infinity, zMax: -Infinity, pos: [], ...init }; slots.set(key, s); }
+    if (!s) { s = { key, tris: 0, area: 0, vol: 0, paintArea: 0, zMin: Infinity, zMax: -Infinity, pos: new Map(), ...init }; slots.set(key, s); }
     return s;
   };
 
@@ -254,7 +269,9 @@ export function parse3MFColors(buffer) {
         const x = v[k], y = v[k + 1], z = v[k + 2];
         P.push(x * M[0] + y * M[3] + z * M[6] + M[9], x * M[1] + y * M[4] + z * M[7] + M[10], x * M[2] + y * M[5] + z * M[8] + M[11]);
       }
-      for (let k = 0; k < 9; k++) s.pos.push(P[k]);
+      const pl = ctx.plate || 0;
+      let arr = s.pos.get(pl); if (!arr) { arr = []; s.pos.set(pl, arr); }
+      for (let k = 0; k < 9; k++) arr.push(P[k]);
       const ux = P[3] - P[0], uy = P[4] - P[1], uz = P[5] - P[2], wx = P[6] - P[0], wy = P[7] - P[1], wz = P[8] - P[2];
       const cx = uy * wz - uz * wy, cy = uz * wx - ux * wz, cz = ux * wy - uy * wx;
       const area = 0.5 * Math.sqrt(cx * cx + cy * cy + cz * cz);
@@ -283,19 +300,26 @@ export function parse3MFColors(buffer) {
   for (const it of items) {
     const top = objects.get(`${rootPath}#${it.objectid}`);
     if (!top || top.type === 'support' || top.type === 'other') continue;
-    const ctx = { topId: it.objectid, ext: bambuObj.get(it.objectid) ?? prusaObj.get(it.objectid) ?? null, prusaVols: prusaVol.get(it.objectid) || null };
+    const plate = objPlate.has(it.objectid) ? objPlate.get(it.objectid) - 1 : 0;
+    const ctx = { topId: it.objectid, plate, ext: bambuObj.get(it.objectid) ?? prusaObj.get(it.objectid) ?? null, prusaVols: prusaVol.get(it.objectid) || null };
     walk(`${rootPath}#${it.objectid}`, parseT(it.transform), ctx, 0);
   }
   if (!totalTris) return null;
 
   // filamenty zużyte tylko w podporach / wieży (bez geometrii modelu)
   if (slice) for (const [ext, info] of slice.perExt) {
-    if (info.grams > 0 && !slots.has('e' + ext)) slots.set('e' + ext, { key: 'e' + ext, ext, name: `Filament ${ext} (podpory/wieża)`, hex: info.hex || colors[ext - 1] || null, tris: 0, area: 0, vol: 0, paintArea: 0, zMin: Infinity, zMax: -Infinity, pos: [] });
+    if (info.grams > 0 && !slots.has('e' + ext)) slots.set('e' + ext, { key: 'e' + ext, ext, name: `Filament ${ext} (podpory/wieża)`, hex: info.hex || colors[ext - 1] || null, tris: 0, area: 0, vol: 0, paintArea: 0, zMin: Infinity, zMax: -Infinity, pos: new Map() });
   }
   const list = [...slots.values()].sort((a, b) => (a.ext ?? 999) - (b.ext ?? 999) || a.key.localeCompare(b.key));
+  const usedPlates = [...new Set(list.flatMap((s) => [...s.pos.keys()]))].sort((a, b) => a - b);
+  const chunks = [];
+  list.forEach((s, i) => { for (const [pl, arr] of s.pos) chunks.push({ slot: i, plate: usedPlates.indexOf(pl), positions: new Float32Array(arr) }); });
   return {
-    slots: list.map((s) => ({ key: s.key, ext: s.ext, name: s.name, hex: s.hex, tris: s.tris, area: s.area, vol: Math.abs(s.vol), paintArea: s.paintArea, zMin: s.zMin, zMax: s.zMax, positions: new Float32Array(s.pos) })),
-    slice: slice ? { minutes: slice.minutes, grams: slice.grams, perSlotGrams: list.map((s) => (s.ext != null && slice.perExt.get(s.ext) ? slice.perExt.get(s.ext).grams : null)) } : null,
+    chunks,
+    plateCount: objPlate.size ? usedPlates.length : 0,
+    plateIds: usedPlates.map((x) => x + 1),
+    slots: list.map((s) => ({ key: s.key, ext: s.ext, name: s.name, hex: s.hex, tris: s.tris, area: s.area, vol: Math.abs(s.vol), paintArea: s.paintArea, zMin: s.zMin, zMax: s.zMax })),
+    slice: slice ? { minutes: slice.minutes, grams: slice.grams, plates: slice.plates, perSlotGrams: list.map((s) => (s.ext != null && slice.perExt.get(s.ext) ? slice.perExt.get(s.ext).grams : null)) } : null,
   };
 }
 

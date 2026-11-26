@@ -1,4 +1,4 @@
-import { Viewer, parseModel, renderThumbnail, computeStats, extract3mfThumbnail, setModelColor, slotGeomStats, PALETTE } from './viewer.js';
+import { Viewer, parseModel, renderThumbnail, computeStats, extract3mfThumbnail, setModelColor, slotGeomStats, PALETTE, VIEW_PRESETS } from './viewer.js';
 import { gcodeColorInfo, hexDist } from './mc.js';
 import { priceItems, slicerInfoFromGcode, slicerInfoFrom3mf, fmtMoney, fmtNum, fmtDuration, parseDuration } from './pricing.js';
 
@@ -172,7 +172,8 @@ function computeVisible() {
     }
     if (st.special === 'order' && !order().items.some((i) => i.rel === f.rel)) return false;
     if (st.special === 'dups' && !dupState.byRel.has(f.rel)) return false;
-    if (st.special === 'orders' || st.special === 'stock') return false;
+    if (st.special === 'coll' && !(m.collections || []).includes(st.coll)) return false;
+    if (['orders', 'stock', 'clients', 'queue'].includes(st.special)) return false;
     if (st.special === 'fav' && !m.favorite) return false;
     if (st.special === 'todo' && m.status !== 'todo') return false;
     if (st.special === 'printed' && m.status !== 'printed') return false;
@@ -220,9 +221,32 @@ function renderSidebar() {
     for (const t of m.tags || []) tagCount.set(t, (tagCount.get(t) || 0) + 1);
   }
   const items = [['all', '◫', 'Wszystkie modele'], ['fav', '★', 'Ulubione'], ['todo', '◷', 'Do wydruku'], ['printed', '✓', 'Wydrukowane'], ['untagged', '◌', 'Bez tagów'], ['dups', '⧉', 'Duplikaty']];
+  const inboxRel = S.inbox && S.inbox.target;
+  if (inboxRel && (S.inbox.enabled || lib.folders.includes(inboxRel))) {
+    items.unshift(['inbox', '⇣', 'Do posortowania']);
+    cnt.inbox = lib.files.filter((f) => f.dir === inboxRel || f.dir.startsWith(inboxRel + '/')).length;
+  }
   cnt.dups = dupState.groups ? dupState.groups.reduce((a, g) => a + g.length, 0) : '';
   sp.innerHTML = items.map(([k, ico, label]) => `<div class="nav-item ${st.special === k ? 'active' : ''}" data-sp="${k}"><span class="ico">${ico}</span>${label}<span class="count">${cnt[k]}</span></div>`).join('');
-  sp.querySelectorAll('[data-sp]').forEach((el) => el.onclick = () => setView({ special: el.dataset.sp }));
+  sp.querySelectorAll('[data-sp]').forEach((el) => el.onclick = () => el.dataset.sp === 'inbox' ? setView({ special: 'folder', folder: S.inbox.target }) : setView({ special: el.dataset.sp }));
+  const ibItem = sp.querySelector('[data-sp="inbox"]'); if (ibItem) { ibItem.classList.toggle('active', st.special === 'folder' && st.folder === S.inbox.target); ibItem.classList.add('inbox-item'); }
+  // kolekcje
+  const collEl = $('#colls');
+  const ccount = new Map();
+  for (const f of lib.files) for (const id of (lib.meta[f.rel] || {}).collections || []) ccount.set(id, (ccount.get(id) || 0) + 1);
+  collEl.innerHTML = collections().length ? collections().map((c) => `<div class="nav-item ${st.special === 'coll' && st.coll === c.id ? 'active' : ''}" data-coll="${esc(c.id)}"><span class="cdot" style="background:${esc(c.color)}"></span>${esc(c.name)}<span class="count">${ccount.get(c.id) || 0}</span></div>`).join('') : '<div class="muted-note">Przeciągnij modele na kolekcję albo użyj „+”</div>';
+  collEl.querySelectorAll('[data-coll]').forEach((el) => {
+    const c = collections().find((x) => x.id === el.dataset.coll);
+    el.onclick = () => setView({ special: 'coll', coll: c.id });
+    el.oncontextmenu = (e) => { e.preventDefault(); collectionMenu(c, e.clientX, e.clientY); };
+    el.addEventListener('dragover', (e) => { if (dragPayload?.kind === 'files') { e.preventDefault(); el.classList.add('drop-hover'); } });
+    el.addEventListener('dragleave', () => el.classList.remove('drop-hover'));
+    el.addEventListener('drop', (e) => { e.preventDefault(); el.classList.remove('drop-hover'); if (dragPayload?.kind === 'files') addToCollection(c.id, dragPayload.rels); });
+  });
+  $('#queueNav').classList.toggle('active', st.special === 'queue');
+  $('#clientsNav').classList.toggle('active', st.special === 'clients');
+  $('#queueCount').textContent = S.orders.filter((o) => o.status === 'printing').length || '';
+  $('#clientsCount').textContent = (S.clients || []).length || '';
   $('#orderNav').classList.toggle('active', st.special === 'order');
   $('#ordersNav').classList.toggle('active', st.special === 'orders');
   $('#stockNav').classList.toggle('active', st.special === 'stock');
@@ -406,13 +430,14 @@ const io = new IntersectionObserver((entries) => {
 
 function renderGrid() {
   const grid = $('#grid'), empty = $('#empty');
-  const view = lib && ['order', 'orders', 'stock'].includes(st.special) ? st.special : null;
-  for (const v of ['order', 'orders', 'stock']) $('#' + v).hidden = view !== v;
+  const VIEWS = ['order', 'orders', 'stock', 'clients', 'queue'];
+  const view = (lib || st.special === 'stock' || st.special === 'clients') && VIEWS.includes(st.special) ? st.special : null;
+  for (const v of VIEWS) $('#' + v).hidden = view !== v;
   grid.hidden = !!view;
-  $('#crumbs').hidden = view === 'orders' || view === 'stock';
+  $('#crumbs').hidden = !!view && view !== 'order';
   if (view) {
     io.disconnect(); empty.hidden = true; visible = computeVisible(); renderCrumbs();
-    ({ order: renderOrder, orders: renderOrders, stock: renderStock })[view]();
+    ({ order: renderOrder, orders: renderOrders, stock: renderStock, clients: renderClients, queue: renderQueue })[view]();
     return;
   }
   if (st.special === 'dups' && lib) {
@@ -458,7 +483,8 @@ function renderCrumbs() {
     parts.forEach((p, i) => { const rel = parts.slice(0, i + 1).join('/'); h += `<span class="sep">/</span><span class="c ${i === parts.length - 1 ? 'cur' : ''}" data-c="${esc(rel)}">${esc(p)}</span>`; });
     h += `<label><input type="checkbox" id="recur" ${st.recursive ? 'checked' : ''}>z podfolderami</label>`;
   } else {
-    const names = { all: 'Wszystkie modele', fav: 'Ulubione', todo: 'Do wydruku', printed: 'Wydrukowane', untagged: 'Bez tagów', order: 'Wycena zamówienia', dups: 'Duplikaty', orders: 'Zamówienia', stock: 'Magazyn' };
+    const names = { all: 'Wszystkie modele', fav: 'Ulubione', todo: 'Do wydruku', printed: 'Wydrukowane', untagged: 'Bez tagów', order: 'Wycena zamówienia', dups: 'Duplikaty', orders: 'Zamówienia', stock: 'Magazyn', inbox: 'Do posortowania' };
+    if (st.special === 'coll') { const c = collections().find((x) => x.id === st.coll); names.coll = c ? `Kolekcja: ${c.name}` : 'Kolekcja'; }
     h += `<span class="c cur">${names[st.special]}</span>`;
   }
   if (st.tag) h += `<span class="sep">·</span><span class="tag active" id="clearTag"><span class="dot" style="background:${tagColor(st.tag)}"></span>${esc(st.tag)} <span class="x">✕</span></span>`;
@@ -488,7 +514,7 @@ grid.addEventListener('click', (e) => {
   if (!card) { if (e.target === grid) { sel.clear(); focused = null; updateSelectionClasses(); renderDetail(); } return; }
   selectCard(card.dataset.rel, e);
 });
-grid.addEventListener('dblclick', (e) => { const card = e.target.closest('.card'); if (card) api.open(card.dataset.rel).catch((er) => toast(er.message, true)); });
+grid.addEventListener('dblclick', (e) => { const card = e.target.closest('.card'); if (card) openDefault([card.dataset.rel]); });
 grid.addEventListener('dragstart', (e) => {
   const card = e.target.closest('.card'); if (!card) return;
   const rel = card.dataset.rel;
@@ -505,7 +531,8 @@ grid.addEventListener('contextmenu', (e) => {
   const rels = [...sel];
   const one = rels.length === 1;
   const items = [];
-  if (one) items.push({ label: 'Otwórz (slicer / domyślny program)', hint: 'Enter', action: () => api.open(rel).catch((er) => toast(er.message, true)) });
+  items.push(...openMenuItems(rels));
+  items.push('-');
   if (one) items.push({ label: 'Pokaż w Eksploratorze', action: () => api.reveal(rel) });
   items.push({ label: 'Przenieś do…', action: async () => { const d = await pickFolderModal(one ? `Przenieś „${baseName(rel)}”` : `Przenieś ${rels.length} pliki`); if (d !== null) await moveItems(rels, d); } });
   if (one) items.push({ label: 'Zmień nazwę…', hint: 'F2', action: () => renameItem(rel, false) });
@@ -516,6 +543,8 @@ grid.addEventListener('contextmenu', (e) => {
   items.push({ label: 'Oznacz: wydrukowane', action: () => setStatus(rels, 'printed') });
   items.push({ label: 'Dodaj tag…', action: () => bulkTag(rels) });
   items.push({ label: 'Dodaj do wyceny', action: () => addToOrder(rels) });
+  items.push({ label: 'Dodaj do kolekcji…', action: () => pickCollectionModal(rels) });
+  if (st.special === 'coll') items.push({ label: 'Usuń z tej kolekcji', action: () => removeFromCollection(st.coll, rels) });
   if (one) items.push({ label: 'Odśwież miniaturę', action: () => { thumbs.delete(rel); requestThumb(rel, true, true); } });
   items.push('-', { label: 'Usuń (do Kosza)', hint: 'Del', danger: true, action: () => trashItems(rels, false) });
   ctxMenu(e.clientX, e.clientY, items);
@@ -572,7 +601,7 @@ async function requestThumb(rel, priority, force = false) {
     thumbs.set(rel, url || 'none'); return setCardThumb(rel);
   }
   if (!force) {
-    const cached = await api.getThumb(f.rel, f.mtime, f.size, thumbVer()).catch(() => null);
+    const cached = await api.getThumb(f.rel, f.mtime, f.size, thumbKeyFor(f)).catch(() => null);
     if (cached) { thumbs.set(rel, cached); return setCardThumb(rel); }
   }
   if (!f.viewable || f.size > 150 * 1048576) { thumbs.set(rel, 'none'); return setCardThumb(rel); }
@@ -602,9 +631,9 @@ async function pump() {
         await new Promise((r) => setTimeout(r, 0));
         const parsed = parseModel(f.ext, buf);
         try { storeParsedAnalysis(f, parsed); } catch (e) { console.warn(e); }
-        url = renderThumbnail(parsed, 320, slotColors(f, true));
+        url = renderThumbnail(parsed, 320, slotColors(f, true), thumbSpecFor(f));
       }
-      if (url) api.putThumb(f.rel, f.mtime, f.size, thumbVer(), url).catch(() => {});
+      if (url) api.putThumb(f.rel, f.mtime, f.size, thumbKeyFor(f), url).catch(() => {});
     } catch (e) { console.warn('thumb', rel, e); }
     thumbs.set(rel, url || 'none');
     setCardThumb(rel);
@@ -613,7 +642,7 @@ async function pump() {
 }
 
 // ---------- dane do wyceny (gramy / czas / filament / kolory) ----------
-function statsKey(f) { return `mv.stats2:${f.rel}:${f.mtime}:${f.size}`; }
+function statsKey(f) { return `mv.stats3:${f.rel}:${f.mtime}:${f.size}`; }
 const slicerKey = (f) => `mv.slicer2:${f.rel}:${f.mtime}:${f.size}`;
 const colorsKey = (f) => `mv.colors2:${f.rel}:${f.mtime}:${f.size}`;
 
@@ -729,7 +758,8 @@ function printData(f) {
   else if (sl && sl.minutes != null) { minutes = sl.minutes; minutesSrc = sl.source; }
   else if (grams != null && p.estGramsPerHour > 0) { minutes = (grams - purgeG) / p.estGramsPerHour * 60 + changeMin; minutesSrc = 'szacunek'; }
 
-  return { parts, grams, minutes, gramsSrc, minutesSrc, multi, changes, changeSrc, purgeG, changeMin: minutesSrc === 'szacunek' ? changeMin : 0, filament: parts[0].filament, filamentSet: parts[0].filamentSet };
+  const plates = stats && stats.plates ? stats.plates.length : 1;
+  return { plates, plateList: stats && stats.plates ? stats.plates : null, parts, grams, minutes, gramsSrc, minutesSrc, multi, changes, changeSrc, purgeG, changeMin: minutesSrc === 'szacunek' ? changeMin : 0, filament: parts[0].filament, filamentSet: parts[0].filamentSet };
 }
 
 // analiza w tle (dane ze slicera + objętość + kolory), po jednym pliku naraz
@@ -769,7 +799,7 @@ function ensureAnalysis(f) {
 }
 function storeParsedAnalysis(f, parsed) {
   const prev = ls.get(statsKey(f), null);
-  if (!prev || prev.failed) ls.set(statsKey(f), computeStats(parsed.object, parsed.isGcode, parsed.zUp));
+  if (!prev || prev.failed) ls.set(statsKey(f), { ...computeStats(parsed.object, parsed.isGcode, parsed.zUp), plates: parsed.plates && parsed.plates.length > 1 ? parsed.plates : null });
   if (ls.get(colorsKey(f), undefined) === undefined || parsed.isGcode) {
     const slots = slotGeomStats(parsed).map((x) => ({ key: x.key, ext: x.ext ?? null, name: x.name || '', hex: x.hex || null, area: x.area, vol: x.vol, paintArea: x.paintArea || 0, zMin: x.zMin, zMax: x.zMax }));
     const info = parsed.info || {};
@@ -839,7 +869,7 @@ function orderLines() {
     return { it, name: it.name || 'Pozycja', grams: it.grams ?? null, minutes: it.minutes ?? null, filament: fl, filamentSet: !!filamentById(it.filamentId), gramsSrc: 'ręcznie', minutesSrc: 'ręcznie', qty: Number(it.qty) || 0, parts: [{ slot: 0, filament: fl, grams: it.grams ?? null }], multi: false };
   });
 }
-const lineItem = (l) => ({ parts: l.parts.map((p) => ({ grams: p.grams || 0, filament: p.filament })), minutes: l.minutes || 0, qty: l.qty });
+const lineItem = (l) => ({ parts: l.parts.map((p) => ({ grams: p.grams || 0, filament: p.filament })), minutes: l.minutes || 0, qty: l.qty, plates: l.plates || 1 });
 const lineFilCost = (l) => l.parts.reduce((a, p) => a + (p.filament && p.grams ? p.grams * l.qty / 1000 * p.filament.pricePerKg : 0), 0);
 
 function renderOrder() {
@@ -873,9 +903,11 @@ function renderOrder() {
   const mats = r.byFil.filter((b) => b.grams > 0).map((b) => `<div class="br"><span>${swatch(b.filament)}${esc(b.filament ? filLabel(b.filament) : 'bez filamentu')}<small>${fmtNum(b.grams, 0)} g</small></span><b>${fmtMoney(b.cost, c)}</b></div>`).join('') || '<div class="muted-note">—</div>';
   el.innerHTML = `
     <div class="order-head">
-      <input class="order-name" id="oName" placeholder="Nazwa zamówienia / klient…" value="${esc(order().name || '')}" spellcheck="false">
+      <input class="order-name" id="oName" placeholder="Nazwa zamówienia…" value="${esc(order().name || '')}" spellcheck="false">
+      <select class="client-sel" id="oClient" title="Klient">${clientOptions(order().clientId)}</select>
       <button class="btn" id="oAdd">+ Pozycja ręczna</button>
       <button class="btn primary" id="oSave">Zapisz jako zamówienie</button>
+      <button class="btn" id="oPdf">Oferta PDF</button>
       <button class="btn" id="oCopy">Kopiuj podsumowanie</button>
       <button class="btn" id="oCsv">Eksport CSV</button>
       <button class="btn danger" id="oClear">Wyczyść</button>
@@ -904,6 +936,12 @@ function renderOrder() {
   $('#oAdd').onclick = () => { order().items.push({ id: 'i' + (orderSeq++).toString(36), name: 'Nowa pozycja', qty: 1 }); saveSettings(); updateOrderCount(); renderOrder(); el.querySelector('tbody tr:last-child input[data-k="name"]')?.select(); };
   $('#oClear').onclick = async () => { if (!lines.length || await confirmModal('Wyczyścić wycenę?', 'Usuniesz wszystkie pozycje z bieżącej wyceny. Pliki modeli zostaną nietknięte.', 'Wyczyść')) { order().items = []; order().name = ''; saveSettings(); updateOrderCount(); renderOrder(); } };
   const sv = $('#oSave'); if (sv) sv.onclick = () => saveOrderToHistory(lines, r);
+  $('#oPdf').onclick = () => offerFromCurrentOrder();
+  $('#oClient').onchange = async (e) => {
+    if (e.target.value === '__new') { const c = await clientModal(); order().clientId = c && c !== 'deleted' ? c.id : order().clientId; }
+    else order().clientId = e.target.value || null;
+    saveSettings(); renderOrder();
+  };
   $('#oCopy').onclick = () => api.copyText(orderSummaryText(lines, r)).then(() => toast('Skopiowano podsumowanie do schowka'));
   $('#oCsv').onclick = async () => { const p = await safe(() => api.saveFile(`${(order().name || 'wycena').replace(/[\\/:*?"<>|]/g, '_')}.csv`, orderCsv(lines, r))); if (p) toast('Zapisano CSV'); };
   const os = $('#oSettings'); if (os) os.onclick = () => openSettings('pricing');
@@ -1098,7 +1136,8 @@ function saveOrderToHistory(lines, r) {
   const no = nextOrderNo();
   const o = {
     id: 'o' + Date.now().toString(36), ...no, name: order().name || `Zamówienie ${no.no}`, createdAt: Date.now(), status: 'quoted', statusAt: { quoted: Date.now() },
-    items: valid.map((l) => ({ rel: l.it.rel || null, name: l.name, qty: l.qty, minutes: l.minutes || 0,
+    clientId: order().clientId || null, clientName: (clientById(order().clientId) || {}).name || null, deadline: null,
+    items: valid.map((l) => ({ rel: l.it.rel || null, name: l.name, qty: l.qty, minutes: l.minutes || 0, plates: l.plates || 1,
       parts: l.parts.map((p) => ({ name: p.name || '', filamentId: p.filament ? p.filament.id : null, label: filLabel(p.filament), hex: p.filament ? p.filament.hex : null, grams: p.grams || 0, pricePerKg: p.filament ? p.filament.pricePerKg : 0 })) })),
     totals: { cost: r.cost, price: r.price, grams: r.grams, minutes: r.minutes, prints: r.prints, filament: r.filament, energy: r.energy, wear: r.wear, labor: r.labor, buffer: r.buffer },
     agreedPrice: null, consumedLog: null, note: '',
@@ -1148,19 +1187,19 @@ function renderOrders() {
   const doneIn = S.orders.filter((o) => o.status === 'done' && monthKey(o.statusAt?.done || o.createdAt) === ordersMonth);
   const sum = (arr, fn) => arr.reduce((a, o) => a + fn(o), 0);
   const revenue = sum(doneIn, finalPrice), cost = sum(doneIn, (o) => o.totals.cost);
-  const list = S.orders.filter((o) => ordersFilter === 'all' || o.status === ordersFilter);
+  const list = S.orders.filter((o) => (ordersFilter === 'all' || o.status === ordersFilter) && (!ordersClient || o.clientId === ordersClient));
   const rows = list.map((o) => {
     const open = ordersOpen.has(o.id);
     const nItems = o.items.reduce((a, it) => a + it.qty, 0);
     return `<tr data-id="${esc(o.id)}" class="ord ${o.status}">
       <td class="mono"><button class="caretbtn ${open ? 'open' : ''}" data-toggle>▶</button>${esc(o.no)}</td>
-      <td><input class="cell" data-k="name" value="${esc(o.name)}" spellcheck="false"></td>
+      <td><input class="cell" data-k="name" value="${esc(o.name)}" spellcheck="false">${o.clientId || o.clientName ? `<small class="cl-note">${esc((clientById(o.clientId) || {}).name || o.clientName)}</small>` : ''}</td>
       <td class="mono small">${new Date(o.createdAt).toLocaleDateString('pl-PL')}</td>
       <td class="r">${nItems}</td>
       <td class="r mono">${fmtMoney(o.totals.cost, c)}</td>
       <td class="r"><input class="cell num wide" data-k="agreedPrice" value="${o.agreedPrice != null ? fmtNum(o.agreedPrice) : ''}" placeholder="${fmtNum(o.totals.price)}" title="Cena uzgodniona z klientem (puste = wyliczona)"></td>
       <td><select class="cell status-sel ${o.status}" data-k="status">${Object.entries(ORDER_STATUS).map(([k, v]) => `<option value="${k}" ${k === o.status ? 'selected' : ''}>${v}</option>`).join('')}</select></td>
-      <td class="r nowrap"><button class="icon-btn" data-load title="Wczytaj do wyceny">↺</button><button class="icon-btn" data-copy title="Kopiuj podsumowanie">⧉</button><button class="icon-btn" data-del title="Usuń">✕</button></td>
+      <td class="r nowrap"><button class="icon-btn" data-pdf title="Oferta PDF">⎙</button><button class="icon-btn" data-load title="Wczytaj do wyceny">↺</button><button class="icon-btn" data-copy title="Kopiuj podsumowanie">⧉</button><button class="icon-btn" data-del title="Usuń">✕</button></td>
     </tr>${open ? `<tr class="ord-detail"><td></td><td colspan="7">
       ${o.items.map((it) => `<div class="od-item"><b>${esc(it.name)}</b>${it.qty > 1 ? ` ×${it.qty}` : ''} <span class="mono small">${fmtDuration(it.minutes)}</span>
         <span class="od-parts">${it.parts.map((p) => `<span>${swatch({ hex: p.hex })}${esc(p.label)} ${fmtNum(p.grams, 1)} g</span>`).join('')}</span></div>`).join('')}
@@ -1179,9 +1218,13 @@ function renderOrders() {
       <div class="kpi"><span>Filament</span><b>${fmtNum(sum(doneIn, (o) => o.totals.grams) / 1000, 2)} kg</b></div>
       <div class="kpi"><span>Czas druku</span><b>${fmtDuration(sum(doneIn, (o) => o.totals.minutes))}</b></div>
     </div>
+    ${ordersClient ? `<div class="client-filter">Klient: <b>${esc((clientById(ordersClient) || {}).name || '?')}</b> <button class="linkbtn" id="ocClear">pokaż wszystkich</button></div>` : ''}
     <div class="chips">${[['all', 'Wszystkie'], ...Object.entries(ORDER_STATUS)].map(([k, v]) => `<button class="chip ${ordersFilter === k ? 'on' : ''}" data-f="${k}">${v} <small>${k === 'all' ? S.orders.length : S.orders.filter((o) => o.status === k).length}</small></button>`).join('')}</div>
     ${list.length ? `<table class="otable orders"><thead><tr><th>Nr</th><th>Nazwa</th><th>Data</th><th class="r">Szt.</th><th class="r">Koszt</th><th class="r">Cena</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
-      : `<div class="empty-order"><div class="big">Brak zamówień</div>Przygotuj wycenę i kliknij „Zapisz jako zamówienie”.</div>`}`;
+      : `<div class="empty-order"><div class="big">Brak zamówień</div>Przygotuj wycenę i kliknij „Zapisz jako zamówienie”.</div>`}
+    <div class="label" style="margin-top:22px">Statystyki</div>
+    ${statsHtml()}`;
+  const occ = $('#ocClear'); if (occ) occ.onclick = () => { ordersClient = null; renderOrders(); };
   $('#oMonth').onchange = (e) => { ordersMonth = e.target.value; renderOrders(); };
   el.querySelectorAll('[data-f]').forEach((b) => b.onclick = () => { ordersFilter = b.dataset.f; renderOrders(); });
   el.querySelectorAll('tr.ord').forEach((tr) => {
@@ -1196,8 +1239,9 @@ function renderOrders() {
     };
     tr.querySelector('[data-k="status"]').onchange = (e) => { setOrderStatus(o, e.target.value); renderOrders(); };
     tr.querySelector('[data-copy]').onclick = () => api.copyText(orderToText(o)).then(() => toast('Skopiowano'));
+    tr.querySelector('[data-pdf]').onclick = () => offerFromOrder(o);
     tr.querySelector('[data-load]').onclick = () => {
-      S.order = { name: o.name, items: o.items.map((it) => it.rel && lib.files.some((f) => f.rel === it.rel)
+      S.order = { name: o.name, clientId: o.clientId || null, items: o.items.map((it) => it.rel && lib.files.some((f) => f.rel === it.rel)
         ? { id: 'i' + (orderSeq++).toString(36), rel: it.rel, qty: it.qty }
         : { id: 'i' + (orderSeq++).toString(36), name: it.name, qty: it.qty, grams: it.parts.reduce((a, p) => a + p.grams, 0), minutes: it.minutes, filamentId: it.parts[0]?.filamentId || null }) };
       saveSettings(); updateOrderCount(); setView({ special: 'order' });
@@ -1239,11 +1283,359 @@ async function computeDups() {
   if (st.special === 'dups') renderGrid();
 }
 
+// ---------- slicery ----------
+function slicerChoices() {
+  const def = S.slicers.default;
+  const list = (S.slicers.list || []).filter((x) => x.enabled && x.available);
+  return list.sort((a, b) => (a.id === def ? -1 : b.id === def ? 1 : 0));
+}
+function defaultSlicer() { return S.slicers.default === 'system' ? null : slicerChoices()[0] || null; }
+function openWith(slicer, rels) { api.openInSlicer(slicer ? slicer.path : 'system', rels).catch((e) => toast(e.message, true)); }
+function openDefault(rels) { openWith(defaultSlicer(), rels); }
+const openLabel = () => { const d = defaultSlicer(); return d ? `Otwórz w ${d.name}` : 'Otwórz'; };
+function openMenuItems(rels, includeDefault = true) {
+  const d = defaultSlicer();
+  const items = [];
+  if (includeDefault) items.push({ label: openLabel(), hint: 'Enter', action: () => openDefault(rels) });
+  for (const s of slicerChoices()) if (!d || s.id !== d.id) items.push({ label: `Otwórz w ${s.name}`, action: () => openWith(s, rels) });
+  if (d) items.push({ label: 'Otwórz programem domyślnym systemu', action: () => openWith(null, rels) });
+  return items;
+}
+
+// ---------- miniatury: widok ----------
+const thumbSpecFor = (f) => metaOf(f.rel).thumbView || { dir: VIEW_PRESETS[S.thumbs.preset] || VIEW_PRESETS.iso };
+const thumbKeyFor = (f) => `${thumbVer()}|${metaOf(f.rel).thumbView ? JSON.stringify(metaOf(f.rel).thumbView).slice(0, 80) : S.thumbs.preset}`;
+async function snapThumbFromView(rel) {
+  const spec = viewer && viewer.getViewSpec ? viewer.getViewSpec() : null;
+  if (!spec) return toast('Najpierw otwórz podgląd 3D', true);
+  await setMeta(rel, { thumbView: spec });
+  thumbs.delete(rel);
+  requestThumb(rel, true, true);
+  toast('Ustawiono miniaturę z bieżącego widoku');
+  renderDetail();
+}
+
+// ---------- kolekcje ----------
+const collections = () => (lib && lib.collections) || [];
+const COLL_COLORS = ['#f2a03d', '#6aa7ff', '#5ec48a', '#e07ab8', '#8e6cd8', '#3ec7c2', '#ef6461', '#e6c84a'];
+async function saveCollections(list) { lib.collections = await api.setCollections(list); renderSidebar(); }
+async function newCollection(addRels = []) {
+  const name = await promptModal('Nowa kolekcja', '', 'Utwórz');
+  if (!name) return null;
+  const c = { id: 'c' + Date.now().toString(36), name, color: COLL_COLORS[collections().length % COLL_COLORS.length] };
+  await saveCollections([...collections(), c]);
+  if (addRels.length) await addToCollection(c.id, addRels);
+  return c;
+}
+async function addToCollection(id, rels) {
+  for (const r of rels) { const cur = metaOf(r).collections || []; if (!cur.includes(id)) await setMeta(r, { collections: [...cur, id] }); }
+  const c = collections().find((x) => x.id === id);
+  toast(`Dodano ${rels.length === 1 ? '1 model' : rels.length + ' modele'} do „${c ? c.name : ''}”`);
+  renderSidebar(); renderGrid(); renderDetail();
+}
+async function removeFromCollection(id, rels) {
+  for (const r of rels) await setMeta(r, { collections: (metaOf(r).collections || []).filter((x) => x !== id) });
+  renderSidebar(); renderGrid(); renderDetail();
+}
+function pickCollectionModal(rels) {
+  return modal(`<h3>Dodaj do kolekcji</h3><div class="folder-pick" id="mList">${collections().map((c) => `<div data-c="${esc(c.id)}"><span class="dot" style="background:${esc(c.color)};display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px"></span>${esc(c.name)}</div>`).join('') || '<div style="color:var(--dim)">Brak kolekcji</div>'}</div>
+    <div class="btns"><button class="btn" id="mNew">+ Nowa kolekcja</button><span style="flex:1"></span><button class="btn" id="mNo">Anuluj</button></div>`, (box, close) => {
+    box.querySelector('#mList').onclick = (e) => { const d = e.target.closest('[data-c]'); if (d) { close(true); addToCollection(d.dataset.c, rels); } };
+    box.querySelector('#mNew').onclick = () => { close(true); newCollection(rels); };
+    box.querySelector('#mNo').onclick = () => close(null);
+  });
+}
+function collectionMenu(c, x, y) {
+  ctxMenu(x, y, [
+    { label: 'Zmień nazwę…', action: async () => { const n = await promptModal('Nazwa kolekcji', c.name, 'Zapisz'); if (n) saveCollections(collections().map((k) => (k.id === c.id ? { ...k, name: n } : k))); } },
+    { label: 'Zmień kolor', action: () => saveCollections(collections().map((k) => (k.id === c.id ? { ...k, color: COLL_COLORS[(COLL_COLORS.indexOf(k.color) + 1) % COLL_COLORS.length] } : k))) },
+    '-',
+    { label: 'Usuń kolekcję (pliki zostają)', danger: true, action: async () => {
+      if (!(await confirmModal(`Usunąć kolekcję „${esc(c.name)}”?`, 'Modele zostaną na swoich miejscach, zniknie tylko kolekcja.', 'Usuń'))) return;
+      for (const f of lib.files) if ((metaOf(f.rel).collections || []).includes(c.id)) await setMeta(f.rel, { collections: metaOf(f.rel).collections.filter((x) => x !== c.id) });
+      if (st.special === 'coll' && st.coll === c.id) st.special = 'all';
+      saveCollections(collections().filter((k) => k.id !== c.id));
+      renderGrid();
+    } },
+  ]);
+}
+
+// ---------- klienci ----------
+const clientById = (id) => (S.clients || []).find((c) => c.id === id) || null;
+function clientModal(c = null) {
+  const v = c || { name: '', email: '', phone: '', address: '', notes: '' };
+  return modal(`<h3>${c ? 'Klient' : 'Nowy klient'}</h3>
+    <div class="form">
+      <label>Imię i nazwisko / firma<input class="field" id="cName" value="${esc(v.name)}"></label>
+      <div class="two"><label>E-mail<input class="field" id="cEmail" value="${esc(v.email)}"></label><label>Telefon<input class="field" id="cPhone" value="${esc(v.phone)}"></label></div>
+      <label>Adres<input class="field" id="cAddr" value="${esc(v.address)}"></label>
+      <label>Notatki<textarea class="notes" id="cNotes">${esc(v.notes)}</textarea></label>
+    </div>
+    <div class="btns">${c ? '<button class="btn danger" id="cDel">Usuń</button><span style="flex:1"></span>' : ''}<button class="btn" id="mNo">Anuluj</button><button class="btn primary" id="mOk">Zapisz</button></div>`, (box, close) => {
+    box.querySelector('#cName').focus();
+    box.querySelector('#mNo').onclick = () => close(null);
+    box.querySelector('#mOk').onclick = () => {
+      const name = box.querySelector('#cName').value.trim();
+      if (!name) return toast('Podaj nazwę klienta', true);
+      const data = { name, email: box.querySelector('#cEmail').value.trim(), phone: box.querySelector('#cPhone').value.trim(), address: box.querySelector('#cAddr').value.trim(), notes: box.querySelector('#cNotes').value };
+      if (c) Object.assign(c, data); else S.clients.push({ id: 'k' + Date.now().toString(36), createdAt: Date.now(), ...data });
+      saveSettings(); close(c || S.clients[S.clients.length - 1]);
+    };
+    const del = box.querySelector('#cDel');
+    if (del) del.onclick = () => { S.clients = S.clients.filter((x) => x !== c); saveSettings(); close('deleted'); };
+  });
+}
+function clientOptions(sel) {
+  return `<option value="">— bez klienta —</option>${(S.clients || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'pl')).map((c) => `<option value="${esc(c.id)}" ${c.id === sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}<option value="__new">+ Nowy klient…</option>`;
+}
+let ordersClient = null;
+function renderClients() {
+  const el = $('#clients');
+  const c = cur();
+  const rows = (S.clients || []).map((k) => {
+    const os = S.orders.filter((o) => o.clientId === k.id);
+    const done = os.filter((o) => o.status === 'done');
+    const last = os.reduce((m, o) => Math.max(m, o.createdAt), 0);
+    return { k, n: os.length, revenue: done.reduce((a, o) => a + finalPrice(o), 0), profit: done.reduce((a, o) => a + finalPrice(o) - o.totals.cost, 0), last };
+  }).sort((a, b) => b.revenue - a.revenue || a.k.name.localeCompare(b.k.name, 'pl'));
+  el.innerHTML = `<div class="order-head"><div class="vtitle">Klienci</div><span class="vsub">${rows.length} w bazie</span><span style="flex:1"></span><button class="btn primary" id="clNew">+ Nowy klient</button></div>
+    ${rows.length ? `<table class="otable"><thead><tr><th>Klient</th><th>Kontakt</th><th class="r">Zamówienia</th><th class="r">Przychód</th><th class="r">Zysk</th><th>Ostatnie</th><th></th></tr></thead><tbody>
+    ${rows.map((r) => `<tr data-id="${esc(r.k.id)}"><td><b>${esc(r.k.name)}</b>${r.k.notes ? `<small class="cl-note">${esc(r.k.notes.slice(0, 80))}</small>` : ''}</td>
+      <td class="small">${[r.k.email, r.k.phone].filter(Boolean).map(esc).join('<br>') || '—'}</td><td class="r mono">${r.n}</td><td class="r mono">${fmtMoney(r.revenue, c)}</td><td class="r mono">${fmtMoney(r.profit, c)}</td>
+      <td class="small">${r.last ? new Date(r.last).toLocaleDateString('pl-PL') : '—'}</td>
+      <td class="r nowrap"><button class="btn" data-orders>Zamówienia</button><button class="icon-btn" data-edit title="Edytuj">✎</button></td></tr>`).join('')}</tbody></table>`
+      : '<div class="empty-order"><div class="big">Brak klientów</div>Dodaj klienta tutaj albo wybierz „+ Nowy klient…” w wycenie zamówienia.</div>'}`;
+  $('#clNew').onclick = async () => { if (await clientModal()) renderClients(); };
+  el.querySelectorAll('tbody tr').forEach((tr) => {
+    const k = clientById(tr.dataset.id);
+    tr.querySelector('[data-edit]').onclick = async () => { if (await clientModal(k)) renderClients(); };
+    tr.querySelector('[data-orders]').onclick = () => { ordersClient = k.id; ordersFilter = 'all'; setView({ special: 'orders' }); };
+  });
+}
+
+// ---------- oferta PDF ----------
+async function ensureThumb(rel) {
+  if (thumbs.has(rel) && thumbs.get(rel) !== 'none') return thumbs.get(rel);
+  await requestThumb(rel, true);
+  for (let i = 0; i < 60 && !thumbs.has(rel); i++) await new Promise((r) => setTimeout(r, 250));
+  const t = thumbs.get(rel);
+  return t && t !== 'none' ? t : null;
+}
+async function buildOfferHtml({ no, name, client, items, total, cost, createdAt }) {
+  const b = S.business, c = cur();
+  // podział ceny na pozycje proporcjonalnie do kosztu pozycji
+  const costs = items.map((it) => priceItems([{ parts: it.parts, minutes: it.minutes, qty: it.qty, plates: it.plates }], P(), false).cost);
+  const sumC = costs.reduce((a, x) => a + x, 0) || 1;
+  let left = Math.round(total * 100);
+  const prices = costs.map((x, i) => { if (i === costs.length - 1) return left / 100; const v = Math.round(total * (x / sumC) * 100); left -= v; return v / 100; });
+  const thumbsHtml = await Promise.all(items.map((it) => (it.rel ? ensureThumb(it.rel) : null)));
+  const date = new Date(createdAt || Date.now());
+  const valid = new Date(date.getTime() + (b.validityDays || 14) * 86400000);
+  const e = esc;
+  return `<!DOCTYPE html><html lang="pl"><head><meta charset="utf-8"><title>Oferta ${e(no || '')}</title><style>
+    @page { size: A4; margin: 0; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; color: #1d2026; font-size: 11pt; }
+    .page { padding: 18mm 18mm 16mm; }
+    header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #f2a03d; padding-bottom: 10mm; margin-bottom: 8mm; }
+    .biz b { font-size: 16pt; display: block; margin-bottom: 2mm; }
+    .biz, .meta { line-height: 1.5; font-size: 9.5pt; color: #4a505a; }
+    .meta { text-align: right; }
+    .meta h1 { margin: 0 0 3mm; font-size: 22pt; color: #1d2026; letter-spacing: .5px; }
+    .to { margin-bottom: 8mm; font-size: 10pt; line-height: 1.5; }
+    .to small { color: #8a909a; text-transform: uppercase; letter-spacing: .8px; font-size: 8pt; display: block; margin-bottom: 1mm; }
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; font-size: 8pt; text-transform: uppercase; letter-spacing: .7px; color: #8a909a; border-bottom: 1px solid #d9dce1; padding: 2mm 2mm; }
+    td { border-bottom: 1px solid #eceef1; padding: 3mm 2mm; vertical-align: middle; }
+    td.r, th.r { text-align: right; white-space: nowrap; }
+    .th { width: 18mm; } .th img { width: 16mm; height: 16mm; object-fit: contain; background: #f4f5f7; border-radius: 2mm; display: block; }
+    .th div { width: 16mm; height: 16mm; background: #f4f5f7; border-radius: 2mm; }
+    .nm b { display: block; } .nm small { color: #8a909a; font-size: 8.5pt; }
+    .sum { margin-top: 6mm; display: flex; justify-content: flex-end; }
+    .sum div { min-width: 70mm; border-top: 2px solid #1d2026; padding-top: 3mm; display: flex; justify-content: space-between; font-size: 14pt; font-weight: 700; }
+    .notes { margin-top: 10mm; font-size: 9pt; color: #4a505a; line-height: 1.6; }
+    footer { margin-top: 14mm; font-size: 8.5pt; color: #8a909a; border-top: 1px solid #eceef1; padding-top: 4mm; }
+  </style></head><body><div class="page">
+    <header><div class="biz"><b>${e(b.name || 'Druk 3D')}</b>${[b.address, b.email, b.phone, b.taxId ? 'NIP: ' + b.taxId : ''].filter(Boolean).map(e).join('<br>')}</div>
+      <div class="meta"><h1>OFERTA</h1>${no ? `Nr ${e(no)}<br>` : ''}Data: ${date.toLocaleDateString('pl-PL')}<br>Ważna do: ${valid.toLocaleDateString('pl-PL')}</div></header>
+    ${client ? `<div class="to"><small>Dla</small><b>${e(client.name)}</b>${[client.address, client.email, client.phone].filter(Boolean).map((x) => '<br>' + e(x)).join('')}</div>` : ''}
+    ${name ? `<div class="to"><small>Dotyczy</small>${e(name)}</div>` : ''}
+    <table><thead><tr><th></th><th>Pozycja</th><th>Materiał</th><th class="r">Ilość</th>${b.showItemPrices ? '<th class="r">Cena</th>' : ''}</tr></thead><tbody>
+      ${items.map((it, i) => `<tr><td class="th">${thumbsHtml[i] ? `<img src="${thumbsHtml[i]}">` : '<div></div>'}</td>
+        <td class="nm"><b>${e(it.name)}</b><small>${it.plates > 1 ? `${it.plates} płyty · ` : ''}${fmtNum(it.parts.reduce((a, p) => a + (p.grams || 0), 0), 0)} g · ${fmtDuration(it.minutes)}</small></td>
+        <td>${[...new Set(it.parts.map((p) => p.filament ? `${p.filament.type || ''} ${p.filament.color}`.trim() : ''))].filter(Boolean).map(e).join(', ')}</td>
+        <td class="r">${it.qty} szt.</td>${b.showItemPrices ? `<td class="r">${fmtMoney(prices[i], c)}</td>` : ''}</tr>`).join('')}
+    </tbody></table>
+    <div class="sum"><div><span>Razem</span><span>${fmtMoney(total, c)}</span></div></div>
+    ${b.bank ? `<div class="notes">Płatność: ${e(b.bank)}</div>` : ''}
+    <footer>${e(b.footer || '')}</footer>
+  </div></body></html>`;
+}
+async function offerFromCurrentOrder() {
+  const lines = orderLines().filter((l) => !l.missing && l.qty > 0);
+  if (!lines.length) return toast('Wycena jest pusta', true);
+  const r = priceItems(lines.map(lineItem), P());
+  const html = await buildOfferHtml({ no: null, name: order().name, client: clientById(order().clientId), items: lines.map((l) => ({ rel: l.f ? l.f.rel : null, name: l.name, qty: l.qty, minutes: l.minutes || 0, plates: l.plates || 1, parts: l.parts.map((p) => ({ grams: p.grams || 0, filament: p.filament })) })), total: P().margin > 0 || P().roundTo > 0 ? r.price : r.cost, cost: r.cost });
+  const p = await safe(() => api.savePdf(html, `Oferta - ${(order().name || 'wycena').replace(/[\\/:*?"<>|]/g, '_')}.pdf`));
+  if (p) toast('Zapisano ofertę PDF');
+}
+async function offerFromOrder(o) {
+  const html = await buildOfferHtml({ no: o.no, name: o.name, client: clientById(o.clientId) || (o.clientName ? { name: o.clientName } : null), createdAt: o.createdAt,
+    items: o.items.map((it) => ({ rel: it.rel && lib && lib.files.some((f) => f.rel === it.rel) ? it.rel : null, name: it.name, qty: it.qty, minutes: it.minutes, plates: it.plates || 1, parts: it.parts.map((p) => ({ grams: p.grams, filament: filamentById(p.filamentId) || { id: p.filamentId, pricePerKg: p.pricePerKg, color: p.label, type: '' } })) })),
+    total: finalPrice(o), cost: o.totals.cost });
+  const p = await safe(() => api.savePdf(html, `Oferta ${o.no.replace('/', '-')} - ${o.name.replace(/[\\/:*?"<>|]/g, '_')}.pdf`));
+  if (p) toast('Zapisano ofertę PDF');
+}
+
+// ---------- kolejka druku ----------
+function orderPrintMinutes(o) {
+  return o.items.reduce((a, it) => a + (it.minutes || 0) * it.qty, 0);
+}
+function schedule() {
+  const q = S.queue;
+  const list = S.orders.filter((o) => o.status === 'printing' || (q.includeQuoted && o.status === 'quoted'))
+    .sort((a, b) => (a.queuePos ?? 1e9) - (b.queuePos ?? 1e9) || a.createdAt - b.createdAt);
+  const printers = Math.max(1, q.printers | 0);
+  const free = new Array(printers).fill(Date.now());
+  const hpd = Math.min(24, Math.max(1, Number(q.hoursPerDay) || 24)), sh = Math.min(23, Math.max(0, Number(q.startHour) || 0));
+  const align = (t) => { // przesuń start do okna pracy
+    if (hpd >= 24) return t;
+    const d = new Date(t), dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), sh).getTime(), dayEnd = dayStart + hpd * 3600000;
+    if (t < dayStart) return dayStart;
+    if (t >= dayEnd) return dayStart + 86400000;
+    return t;
+  };
+  const addWork = (t, min) => { // praca tylko w oknie godzin
+    let left = min * 60000; t = align(t);
+    while (left > 0) {
+      if (hpd >= 24) return t + left;
+      const d = new Date(t), dayEnd = new Date(d.getFullYear(), d.getMonth(), d.getDate(), sh).getTime() + hpd * 3600000;
+      const chunk = Math.min(left, dayEnd - t);
+      t += chunk; left -= chunk;
+      if (left > 0) t = align(t + 1);
+    }
+    return t;
+  };
+  return list.map((o) => {
+    let pi = 0; for (let i = 1; i < printers; i++) if (free[i] < free[pi]) pi = i;
+    const plates = o.items.reduce((a, it) => a + (it.plates || 1) * it.qty, 0);
+    const minutes = orderPrintMinutes(o) + plates * (P().minPerPrint || 0);
+    const start = align(free[pi]);
+    const end = addWork(start, minutes);
+    free[pi] = end;
+    const late = o.deadline ? end - new Date(o.deadline + 'T23:59:59').getTime() : -1;
+    return { o, printer: pi, start, end, minutes, late };
+  });
+}
+function renderQueue() {
+  const el = $('#queue');
+  const q = S.queue;
+  const sch = schedule();
+  const fmtDT = (t) => new Date(t).toLocaleString('pl-PL', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const t0 = Date.now(), t1 = Math.max(t0 + 7 * 86400000, ...sch.map((s) => s.end));
+  const span = t1 - t0, W = 1000, rowH = 44, printers = Math.max(1, q.printers | 0);
+  const days = Math.ceil(span / 86400000) + 1;
+  const dayLines = Array.from({ length: days }, (_, i) => { const d = new Date(new Date(t0).setHours(0, 0, 0, 0) + i * 86400000); const x = (d.getTime() - t0) / span * W; return x >= 0 && x <= W ? `<line x1="${x}" x2="${x}" y1="0" y2="${printers * rowH + 18}" class="gl"/><text x="${x + 4}" y="${printers * rowH + 16}" class="gt">${d.toLocaleDateString('pl-PL', { day: '2-digit', month: '2-digit' })}</text>` : ''; }).join('');
+  const bars = sch.map((s, i) => { const x = (s.start - t0) / span * W, w = Math.max(3, (s.end - s.start) / span * W); return `<g><rect x="${x}" y="${s.printer * rowH + 3}" width="${w}" height="${rowH - 6}" rx="4" class="gbar ${s.late > 0 ? 'late' : ''} ${s.o.status}"><title>${esc(s.o.no + ' ' + s.o.name)}</title></rect>${w > 60 ? `<text x="${x + 6}" y="${s.printer * rowH + rowH / 2 + 4}" class="bt">${esc(s.o.no)}</text>` : ''}</g>`; }).join('');
+  el.innerHTML = `<div class="order-head"><div class="vtitle">Kolejka druku</div><span class="vsub">${sch.length} zamówień · ${fmtDuration(sch.reduce((a, s) => a + s.minutes, 0))} pracy drukarek</span><span style="flex:1"></span></div>
+    <div class="qsettings">
+      <label>Drukarki <input type="number" id="qP" min="1" max="20" value="${q.printers}"></label>
+      <label>Druk od <input type="number" id="qS" min="0" max="23" value="${q.startHour}">:00</label>
+      <label>przez <input type="number" id="qH" min="1" max="24" value="${q.hoursPerDay}"> h dziennie</label>
+      <label class="check"><input type="checkbox" id="qQ" ${q.includeQuoted ? 'checked' : ''}> uwzględnij też „Wycenione”</label>
+    </div>
+    ${sch.length ? `<svg class="gantt" viewBox="0 0 ${W} ${printers * rowH + 22}">${dayLines}${bars}</svg>
+    <table class="otable queue"><thead><tr><th></th><th>Nr</th><th>Zamówienie</th><th>Klient</th><th class="r">Czas</th><th>Start</th><th>Koniec</th><th>Termin</th><th></th></tr></thead><tbody>
+    ${sch.map((s, i) => `<tr data-id="${esc(s.o.id)}" class="${s.late > 0 ? 'late' : ''}"><td class="nowrap"><button class="icon-btn" data-up ${i === 0 ? 'disabled' : ''}>▲</button><button class="icon-btn" data-down ${i === sch.length - 1 ? 'disabled' : ''}>▼</button></td>
+      <td class="mono">${esc(s.o.no)}</td><td>${esc(s.o.name)}${printers > 1 ? `<small class="cl-note">drukarka ${s.printer + 1}</small>` : ''}</td><td class="small">${esc((clientById(s.o.clientId) || {}).name || s.o.clientName || '')}</td>
+      <td class="r mono">${fmtDuration(s.minutes)}</td><td class="small">${fmtDT(s.start)}</td><td class="small"><b>${fmtDT(s.end)}</b></td>
+      <td><input type="date" class="cell date" data-deadline value="${esc(s.o.deadline || '')}"></td>
+      <td class="small">${s.o.deadline ? (s.late > 0 ? `<span class="late-badge">spóźnione o ${Math.ceil(s.late / 86400000)} d</span>` : '<span class="ok-badge">na czas</span>') : ''}</td></tr>`).join('')}</tbody></table>
+    <p class="hint">Czas obejmuje druk wszystkich płyt i ${P().minPerPrint} min obsługi na płytę. Drukarka pracuje od ${q.startHour}:00 przez ${q.hoursPerDay} h dziennie (24 = bez przerw).</p>`
+    : '<div class="empty-order"><div class="big">Kolejka jest pusta</div>Zamówienia ze statusem „W druku” pojawią się tutaj z przewidywanym terminem ukończenia.</div>'}`;
+  const num = (id, k, min, max) => { const i = $(id); i.onchange = () => { q[k] = Math.min(max, Math.max(min, parseInt(i.value, 10) || min)); saveSettings(); renderQueue(); }; };
+  num('#qP', 'printers', 1, 20); num('#qS', 'startHour', 0, 23); num('#qH', 'hoursPerDay', 1, 24);
+  $('#qQ').onchange = (e) => { q.includeQuoted = e.target.checked; saveSettings(); renderQueue(); };
+  el.querySelectorAll('tbody tr').forEach((tr, i) => {
+    const o = S.orders.find((x) => x.id === tr.dataset.id);
+    const move = (d) => { const ids = sch.map((s) => s.o); const j = i + d; [ids[i], ids[j]] = [ids[j], ids[i]]; ids.forEach((x, k) => { x.queuePos = k; }); saveSettings(); renderQueue(); };
+    tr.querySelector('[data-up]').onclick = () => move(-1);
+    tr.querySelector('[data-down]').onclick = () => move(1);
+    tr.querySelector('[data-deadline]').onchange = (e) => { o.deadline = e.target.value || null; saveSettings(); renderQueue(); };
+  });
+}
+
+// ---------- statystyki (wykresy) ----------
+function statsHtml() {
+  const c = cur();
+  const done = S.orders.filter((o) => o.status === 'done');
+  if (!done.length) return '<div class="muted-note" style="padding:8px 0">Wykresy pojawią się po pierwszym zamówieniu ze statusem „Wydane”.</div>';
+  const now = new Date();
+  const months = Array.from({ length: 12 }, (_, i) => { const d = new Date(now.getFullYear(), now.getMonth() - 11 + i, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; });
+  const agg = months.map((m) => { const os = done.filter((o) => monthKey(o.statusAt?.done || o.createdAt) === m); const rev = os.reduce((a, o) => a + finalPrice(o), 0), cost = os.reduce((a, o) => a + o.totals.cost, 0); return { m, rev, cost, profit: rev - cost }; });
+  const max = Math.max(1, ...agg.map((a) => Math.max(a.rev, a.cost)));
+  const W = 720, H = 190, pad = 34, bw = (W - pad) / 12;
+  const y = (v) => H - 22 - (v / max) * (H - 40);
+  const ticks = [0, 0.5, 1].map((t) => max * t);
+  const chart = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Przychód, koszt i zysk w ostatnich 12 miesiącach">
+    ${ticks.map((t) => `<line x1="${pad}" x2="${W}" y1="${y(t)}" y2="${y(t)}" class="gl"/><text x="${pad - 4}" y="${y(t) + 3}" class="gt" text-anchor="end">${Math.round(t)}</text>`).join('')}
+    ${agg.map((a, i) => { const x = pad + i * bw; const lbl = new Date(+a.m.slice(0, 4), +a.m.slice(5) - 1, 1).toLocaleDateString('pl-PL', { month: 'short' });
+      return `<g><rect x="${x + bw * 0.14}" y="${y(a.rev)}" width="${bw * 0.34}" height="${H - 22 - y(a.rev)}" rx="2" class="b-rev"><title>${lbl}: przychód ${fmtMoney(a.rev, c)}</title></rect>
+      <rect x="${x + bw * 0.52}" y="${y(a.cost)}" width="${bw * 0.34}" height="${H - 22 - y(a.cost)}" rx="2" class="b-cost"><title>${lbl}: koszt ${fmtMoney(a.cost, c)}</title></rect>
+      ${a.rev ? `<text x="${x + bw / 2}" y="${y(Math.max(a.rev, a.cost)) - 4}" class="gv" text-anchor="middle">${a.profit >= 0 ? '+' : ''}${Math.round(a.profit)}</text>` : ''}
+      <text x="${x + bw / 2}" y="${H - 6}" class="gt" text-anchor="middle">${lbl}</text></g>`; }).join('')}
+  </svg>
+  <div class="legend2"><span><i class="b-rev"></i>Przychód</span><span><i class="b-cost"></i>Koszt własny</span><span>liczba nad słupkami = zysk (${esc(c)})</span></div>`;
+  // zysk wg kategorii (folder najwyższego poziomu) – przychód dzielony proporcjonalnie do kosztu pozycji
+  const cat = new Map();
+  for (const o of done) {
+    const costs = o.items.map((it) => priceItems([{ parts: it.parts.map((p) => ({ grams: p.grams, filament: { id: p.filamentId, pricePerKg: p.pricePerKg } })), minutes: it.minutes, qty: it.qty, plates: it.plates || 1 }], P(), false).cost);
+    const sum = costs.reduce((a, x) => a + x, 0) || 1;
+    o.items.forEach((it, i) => {
+      const k = it.rel ? (it.rel.includes('/') ? it.rel.split('/')[0] : '(główny folder)') : 'Pozycje ręczne';
+      const share = costs[i] / sum;
+      const e = cat.get(k) || { rev: 0, cost: 0, n: 0 };
+      e.rev += finalPrice(o) * share; e.cost += o.totals.cost * share; e.n += it.qty;
+      cat.set(k, e);
+    });
+  }
+  const cats = [...cat.entries()].map(([k, v]) => ({ k, ...v, profit: v.rev - v.cost })).sort((a, b) => b.profit - a.profit);
+  const cmax = Math.max(1, ...cats.map((x) => Math.abs(x.profit)));
+  const catHtml = cats.map((x) => `<div class="hbar"><span class="hl" title="${esc(x.k)}">${esc(x.k)}</span><span class="ht"><i style="width:${Math.abs(x.profit) / cmax * 100}%" class="${x.profit < 0 ? 'neg' : ''}"></i></span><b>${fmtMoney(x.profit, c)}</b><small>${x.n} szt. · marża ${x.rev ? Math.round(x.profit / x.rev * 100) : 0}%</small></div>`).join('');
+  // zużycie filamentów (wydane)
+  const fil = new Map();
+  for (const o of done) for (const it of o.items) for (const p of it.parts) { const e = fil.get(p.filamentId || p.label) || { label: p.label, hex: p.hex, g: 0 }; e.g += p.grams * it.qty; fil.set(p.filamentId || p.label, e); }
+  const fl = [...fil.values()].sort((a, b) => b.g - a.g);
+  const fmax = Math.max(1, ...fl.map((x) => x.g));
+  const filHtml = fl.map((x) => `<div class="hbar"><span class="hl">${swatch({ hex: x.hex })}${esc(x.label)}</span><span class="ht"><i style="width:${x.g / fmax * 100}%;background:${esc(x.hex || 'var(--accent)')}"></i></span><b>${fmtNum(x.g / 1000, 2)} kg</b><small></small></div>`).join('');
+  return `<div class="stats-grid"><div class="scard wide"><h4>Ostatnie 12 miesięcy</h4>${chart}</div>
+    <div class="scard"><h4>Zysk wg kategorii (folderów)</h4>${catHtml}</div>
+    <div class="scard"><h4>Zużycie filamentów (wydane zamówienia)</h4>${filHtml}</div></div>`;
+}
+
+// ---------- aktualizacje ----------
+let updateState = null;
+function renderUpdateBanner() {
+  const b = $('#updBanner');
+  if (!updateState || updateState.state === 'none' || updateState.state === 'error') { b.hidden = true; return; }
+  b.hidden = false;
+  if (updateState.state === 'available') b.innerHTML = `Dostępna nowa wersja ${esc(updateState.version)} <button class="toast-btn" id="updGo">Pobierz</button><button class="icon-btn" id="updX">✕</button>`;
+  if (updateState.state === 'progress') b.innerHTML = `Pobieranie aktualizacji… ${updateState.percent}%`;
+  if (updateState.state === 'downloaded') b.innerHTML = `Aktualizacja ${esc(updateState.version)} gotowa <button class="toast-btn" id="updInst">Uruchom ponownie i zainstaluj</button>`;
+  const g = $('#updGo'); if (g) g.onclick = () => api.updateDownload();
+  const x = $('#updX'); if (x) x.onclick = () => { b.hidden = true; };
+  const i = $('#updInst'); if (i) i.onclick = () => api.updateInstall();
+}
+api.onUpdate((d) => { updateState = d; renderUpdateBanner(); if (d.state === 'error' && d.manual) toast('Nie udało się sprawdzić aktualizacji', true); });
+api.onInboxAdded((d) => {
+  toast(`Nowe w „${S.inbox.target}”: ${d.added.length === 1 ? baseName(d.added[0]) : d.added.length + ' pliki'} (z ${d.file})`, false, { label: 'Pokaż', fn: () => setView({ special: 'folder', folder: S.inbox.target }) });
+});
+
 // ---------- ustawienia: okno ----------
 function openSettings(tab = 'appearance') {
   return modal(`<div class="settings">
     <div class="s-head"><h3>Ustawienia</h3>
-      <div class="tabs"><button data-tab="appearance">Wygląd</button><button data-tab="pricing">Wycena</button><button data-tab="filaments">Filamenty</button></div></div>
+      <div class="tabs"><button data-tab="appearance">Wygląd</button><button data-tab="pricing">Wycena</button><button data-tab="filaments">Filamenty</button><button data-tab="slicers">Slicery</button><button data-tab="inbox">Pobrane</button><button data-tab="business">Oferta</button><button data-tab="backup">Kopia</button><button data-tab="about">O programie</button></div></div>
     <div class="s-body" id="sBody"></div>
     <div class="btns"><button class="btn" id="sReset">Przywróć domyślne</button><span style="flex:1"></span><button class="btn primary" id="sClose">Gotowe</button></div>
   </div>`, (box, close) => {
@@ -1253,7 +1645,8 @@ function openSettings(tab = 'appearance') {
     const show = (t) => {
       current = t;
       box.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
-      ({ appearance: tabAppearance, pricing: tabPricing, filaments: tabFilaments })[t](body);
+      ({ appearance: tabAppearance, pricing: tabPricing, filaments: tabFilaments, slicers: tabSlicers, inbox: tabInbox, business: tabBusiness, backup: tabBackup, about: tabAbout })[t](body);
+      box.querySelector('#sReset').hidden = !['appearance', 'pricing', 'filaments'].includes(t);
     };
     box.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => show(b.dataset.tab));
     box.querySelector('#sClose').onclick = () => close(true);
@@ -1287,12 +1680,16 @@ function tabAppearance(body) {
       <div class="presets">${presets.map((p) => `<button class="preset ${p === a.modelColor ? 'on' : ''}" data-c="${p}" style="background:${p}" title="${p}"></button>`).join('')}</div></div>
     <label class="check"><input type="checkbox" id="aFil" ${a.useFilamentColor ? 'checked' : ''}> W podglądzie 3D używaj koloru filamentu przypisanego do modelu</label>
     <p class="hint">Miniatury przerysują się w nowym kolorze. Miniatury z obrazków i osadzone przez slicer pozostają bez zmian.</p>
+    <div class="label">Domyślny kąt kamery na miniaturach</div>
+    <div class="seg" id="aPreset">${[['iso', 'Izometryczny'], ['front', 'Przód'], ['side', 'Bok'], ['top', 'Góra'], ['back', 'Tył']].map(([k, v]) => `<button data-p="${k}" class="${S.thumbs.preset === k ? 'on' : ''}">${v}</button>`).join('')}</div>
+    <p class="hint">Dla pojedynczego modelu ustawisz własny kąt w panelu modelu („Miniatura → Z obecnego widoku”) albo przyciskiem ◉ w podglądzie.</p>
     <div class="label">Pamięć podręczna</div>
     <button class="btn" id="aClear">Wyczyść i wygeneruj miniatury od nowa</button>`;
   const setColor = (c) => { a.modelColor = c; saveSettings(); applyAppearance(true); body.querySelectorAll('.preset').forEach((p) => p.classList.toggle('on', p.dataset.c === c)); body.querySelector('#aColor').value = c; };
   body.querySelector('#aColor').onchange = (e) => setColor(e.target.value);
   body.querySelectorAll('.preset').forEach((p) => p.onclick = () => setColor(p.dataset.c));
   body.querySelector('#aFil').onchange = (e) => { a.useFilamentColor = e.target.checked; saveSettings(); applyAppearance(false); };
+  body.querySelectorAll('#aPreset [data-p]').forEach((b) => b.onclick = () => { S.thumbs.preset = b.dataset.p; saveSettings(); body.querySelectorAll('#aPreset [data-p]').forEach((x) => x.classList.toggle('on', x === b)); applyAppearance(true); });
   body.querySelector('#aClear').onclick = async () => { await api.clearThumbs(); applyAppearance(true); toast('Miniatury zostaną wygenerowane ponownie'); };
 }
 
@@ -1391,6 +1788,104 @@ function tabFilaments(body) {
   draw();
 }
 
+function tabSlicers(body) {
+  const sl = S.slicers;
+  const draw = () => {
+    const list = sl.list || [];
+    body.innerHTML = `<p class="hint" style="margin-top:0">Pokazuję tylko slicery zainstalowane na tym komputerze. Domyślny slicer otwiera się po dwukliku, klawiszem Enter i przyciskiem „Otwórz”. Pozostałe są w menu ▾ i pod prawym przyciskiem.</p>
+      <table class="ftable"><thead><tr><th title="Domyślny">★</th><th>Pokazuj</th><th>Slicer</th><th>Ścieżka</th><th></th></tr></thead><tbody>
+      ${list.map((x, i) => `<tr data-i="${i}" class="${x.available ? '' : 'unavail'}"><td><input type="radio" name="sdef" ${sl.default === x.id ? 'checked' : ''} ${x.available && x.enabled ? '' : 'disabled'}></td>
+        <td><input type="checkbox" data-en ${x.enabled ? 'checked' : ''}></td><td><b>${esc(x.name)}</b>${x.custom ? ' <small class="muted-note" style="padding:0">(własny)</small>' : ''}</td>
+        <td class="pathcell" title="${esc(x.path || '')}">${x.available ? esc(x.path) : '<span style="color:var(--red)">nie znaleziono</span>'}</td>
+        <td class="nowrap"><button class="btn" data-path>Zmień…</button>${x.custom ? '<button class="icon-btn" data-del>✕</button>' : ''}</td></tr>`).join('')}
+      <tr><td><input type="radio" name="sdef" ${sl.default === 'system' ? 'checked' : ''} data-system></td><td></td><td><b>Program domyślny systemu</b></td><td class="pathcell">to, co Windows otwiera dla danego typu pliku</td><td></td></tr>
+      </tbody></table>
+      <div class="btns" style="justify-content:flex-start"><button class="btn" id="sDetect">Wykryj ponownie</button><button class="btn" id="sAdd">+ Dodaj inny slicer…</button></div>
+      ${!list.some((x) => x.available) ? '<p class="hint">Nie znalazłem żadnego slicera w typowych miejscach. Dodaj go ręcznie, wskazując plik .exe.</p>' : ''}`;
+    body.querySelectorAll('tbody tr[data-i]').forEach((tr) => {
+      const x = list[+tr.dataset.i];
+      tr.querySelector('input[type=radio]').onchange = () => { sl.default = x.id; saveSettings(); draw(); };
+      tr.querySelector('[data-en]').onchange = (e) => { x.enabled = e.target.checked; if (!x.enabled && sl.default === x.id) { const n = list.find((y) => y.enabled && y.available); sl.default = n ? n.id : 'system'; } saveSettings(); draw(); };
+      tr.querySelector('[data-path]').onclick = async () => { const p = await api.slicersPick(); if (p) { x.path = p; x.available = true; saveSettings(); draw(); } };
+      const d = tr.querySelector('[data-del]'); if (d) d.onclick = () => { sl.list = list.filter((y) => y !== x); if (sl.default === x.id) sl.default = 'system'; saveSettings(); draw(); };
+    });
+    body.querySelector('[data-system]').onchange = () => { sl.default = 'system'; saveSettings(); draw(); };
+    body.querySelector('#sDetect').onclick = async () => { await api.setSettings(S); const r = await safe(() => api.slicersDetect()); if (r) { S.slicers = r; tabSlicers(body); toast(`Wykryto: ${r.list.filter((x) => x.available).map((x) => x.name).join(', ') || 'brak'}`); } };
+    body.querySelector('#sAdd').onclick = async () => {
+      const p = await api.slicersPick(); if (!p) return;
+      const name = await promptModal('Nazwa slicera', baseName(p.replace(/\\/g, '/')).replace(/\.(exe|app)$/i, ''), 'Dodaj');
+      if (!name) return;
+      sl.list = [...list, { id: 'custom-' + Date.now().toString(36), name, path: p, enabled: true, available: true, custom: true }];
+      saveSettings(); openSettings('slicers');
+    };
+  };
+  draw();
+}
+function tabInbox(body) {
+  const ib = S.inbox;
+  body.innerHTML = `<label class="check"><input type="checkbox" id="iEn" ${ib.enabled ? 'checked' : ''}> Śledź foldery i zbieraj nowe modele do folderu biblioteki „${esc(ib.target)}”</label>
+    <p class="hint">Nowe pliki STL, 3MF, OBJ, STEP, G-code… pobrane po włączeniu tej opcji trafią do skrzynki. Archiwa ZIP z modelami (np. z Printables) zostaną rozpakowane do osobnego folderu, a sam ZIP zostaje w Pobranych.</p>
+    <div class="label">Śledzone foldery</div>
+    <div class="folders-list">${(ib.folders || []).map((f, i) => `<div class="frow"><span class="pathcell">${esc(f)}</span><button class="icon-btn" data-rm="${i}">✕</button></div>`).join('') || '<div class="muted-note">brak</div>'}</div>
+    <button class="btn" id="iAddF" style="margin-top:6px">+ Dodaj folder…</button>
+    <div class="label">Ustawienia</div>
+    <div class="fields">
+      <label class="fld"><span>Pliki z folderu</span><span class="inp"><select id="iMode"><option value="move" ${ib.mode === 'move' ? 'selected' : ''}>przenoś do biblioteki</option><option value="copy" ${ib.mode === 'copy' ? 'selected' : ''}>kopiuj (zostaw w Pobranych)</option></select></span></label>
+      <label class="fld"><span>Folder skrzynki w bibliotece</span><span class="inp"><input id="iTarget" value="${esc(ib.target)}" style="width:200px"></span></label>
+      <label class="fld"><span>Rozpakowuj archiwa ZIP z modelami</span><span class="inp"><input type="checkbox" id="iZip" ${ib.unzip ? 'checked' : ''}></span></label>
+    </div>
+    <button class="btn" id="iExisting" style="margin-top:12px" ${ib.enabled ? '' : 'disabled'}>Zaimportuj też modele, które już są w tych folderach</button>`;
+  const apply = async () => { saveSettings(); await api.setSettings(S); await api.inboxApply(); renderSidebar(); };
+  body.querySelector('#iEn').onchange = async (e) => { ib.enabled = e.target.checked; if (ib.enabled) ib.enabledAt = Date.now(); await apply(); tabInbox(body); };
+  body.querySelectorAll('[data-rm]').forEach((b) => b.onclick = async () => { ib.folders.splice(+b.dataset.rm, 1); await apply(); tabInbox(body); });
+  body.querySelector('#iAddF').onclick = async () => { const p = await api.inboxPickFolder(); if (p) { ib.folders = [...(ib.folders || []), p]; await apply(); tabInbox(body); } };
+  body.querySelector('#iMode').onchange = async (e) => { ib.mode = e.target.value; await apply(); };
+  body.querySelector('#iTarget').onchange = async (e) => { const v = e.target.value.trim().replace(/[\\:*?"<>|]/g, '_'); if (v) { ib.target = v; await apply(); } };
+  body.querySelector('#iZip').onchange = async (e) => { ib.unzip = e.target.checked; await apply(); };
+  body.querySelector('#iExisting').onclick = async () => { const n = await safe(() => api.inboxScanExisting()); if (n != null) toast(n ? `Importuję ${n} plików…` : 'Nie znalazłem modeli w śledzonych folderach'); };
+}
+function tabBusiness(body) {
+  const b = S.business;
+  const f = (k, label, w = 320) => `<label class="fld"><span>${label}</span><span class="inp"><input data-k="${k}" value="${esc(b[k] || '')}" style="width:${w}px"></span></label>`;
+  body.innerHTML = `<p class="hint" style="margin-top:0">Te dane trafią na ofertę PDF dla klienta (przycisk „Oferta PDF” w wycenie i przy zamówieniach).</p>
+    <div class="fields">${f('name', 'Nazwa (firma lub imię i nazwisko)')}${f('address', 'Adres')}${f('email', 'E-mail')}${f('phone', 'Telefon', 200)}${f('taxId', 'NIP (opcjonalnie)', 200)}${f('bank', 'Płatność / numer konta', 320)}${f('footer', 'Stopka', 320)}
+      <label class="fld"><span>Oferta ważna przez</span><span class="inp"><input type="number" data-k="validityDays" min="1" value="${b.validityDays}" style="width:80px"><em>dni</em></span></label>
+      <label class="fld"><span>Pokazuj ceny poszczególnych pozycji</span><span class="inp"><input type="checkbox" id="bItem" ${b.showItemPrices ? 'checked' : ''}></span></label>
+    </div>`;
+  body.querySelectorAll('input[data-k]').forEach((i) => i.oninput = () => { b[i.dataset.k] = i.type === 'number' ? Math.max(1, parseInt(i.value, 10) || 14) : i.value; saveSettings(); });
+  body.querySelector('#bItem').onchange = (e) => { b.showItemPrices = e.target.checked; saveSettings(); };
+}
+async function tabBackup(body) {
+  const list = await api.backupList().catch(() => []);
+  body.innerHTML = `<p class="hint" style="margin-top:0">Kopia obejmuje ustawienia, filamenty, magazyn, klientów, historię zamówień oraz tagi i notatki bieżącej biblioteki. Same pliki modeli nie są kopiowane.</p>
+    <label class="check"><input type="checkbox" id="bkAuto" ${S.backup.auto ? 'checked' : ''}> Automatyczna kopia raz dziennie (trzymam ${S.backup.keep} ostatnich)</label>
+    <div class="btns" style="justify-content:flex-start"><button class="btn primary" id="bkNow">Zrób kopię teraz</button><button class="btn" id="bkExp">Eksportuj do pliku…</button><button class="btn" id="bkImp">Importuj z pliku…</button><button class="btn" id="bkDir">Otwórz folder kopii</button></div>
+    <label class="check"><input type="checkbox" id="bkLib" checked> Przy przywracaniu nadpisz też tagi i notatki bieżącej biblioteki</label>
+    <div class="label">Ostatnie kopie</div>
+    <div class="folder-pick bk-list">${list.map((x) => { const m = x.name.match(/(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})/); return `<div class="frow"><span>${m ? `${m[3]}.${m[2]}.${m[1]} ${m[4]}:${m[5]}` : esc(x.name)}</span><small>${fmtSize(x.size)}</small><button class="btn" data-restore="${esc(x.name)}">Przywróć</button></div>`; }).join('') || '<div class="muted-note">Brak kopii</div>'}</div>`;
+  const after = async (newS) => { if (!newS) return; S = newS; setModelColor(S.appearance.modelColor); thumbs.clear(); await reload(); toast('Przywrócono dane z kopii'); tabBackup(body); };
+  body.querySelector('#bkAuto').onchange = (e) => { S.backup.auto = e.target.checked; saveSettings(); };
+  body.querySelector('#bkNow').onclick = async () => { await api.setSettings(S); const n = await safe(() => api.backupCreate()); if (n) { toast('Zrobiono kopię'); tabBackup(body); } };
+  body.querySelector('#bkExp').onclick = async () => { await api.setSettings(S); const p = await safe(() => api.backupExport()); if (p) toast('Wyeksportowano kopię'); };
+  body.querySelector('#bkImp').onclick = async () => after(await safe(() => api.backupImport(body.querySelector('#bkLib').checked)));
+  body.querySelector('#bkDir').onclick = () => api.backupOpenDir();
+  body.querySelectorAll('[data-restore]').forEach((b) => b.onclick = async (e) => {
+    const btn = e.currentTarget;
+    if (btn.dataset.armed !== '1') { btn.dataset.armed = '1'; btn.textContent = 'Na pewno?'; setTimeout(() => { btn.dataset.armed = ''; btn.textContent = 'Przywróć'; }, 3000); return; }
+    after(await safe(() => api.backupRestore(b.dataset.restore, body.querySelector('#bkLib').checked)));
+  });
+}
+async function tabAbout(body) {
+  const v = await api.appVersion().catch(() => ({ version: '?' }));
+  body.innerHTML = `<div class="about"><div class="logo big"></div><div><div class="vtitle">ModelVault ${esc(v.version)}</div><div class="vsub">Menedżer biblioteki modeli 3D z wyceną wydruków</div></div></div>
+    <div class="label">Aktualizacje</div>
+    ${v.updater ? `<label class="check"><input type="checkbox" id="upAuto" ${S.updates.auto ? 'checked' : ''}> Sprawdzaj aktualizacje przy starcie</label>
+      <button class="btn" id="upNow">Sprawdź teraz</button> <span class="vsub" id="upMsg"></span>`
+      : `<p class="hint">${v.portable ? 'To wersja przenośna (ZIP) – aktualizacje automatyczne działają w wersji instalowanej.' : 'Aktualizacje automatyczne działają w zainstalowanej wersji na Windows.'} Nowe wersje znajdziesz na GitHubie w zakładce Releases.</p>`}`;
+  const a = body.querySelector('#upAuto'); if (a) a.onchange = (e) => { S.updates.auto = e.target.checked; saveSettings(); };
+  const n = body.querySelector('#upNow'); if (n) n.onclick = async () => { body.querySelector('#upMsg').textContent = 'Sprawdzam…'; await safe(() => api.updateCheck()); setTimeout(() => { const m = body.querySelector('#upMsg'); if (m) m.textContent = updateState && updateState.state === 'available' ? `Dostępna ${updateState.version}` : updateState && updateState.state === 'none' ? 'Masz najnowszą wersję' : ''; }, 2500); };
+}
+
 function applyAppearance(colorChanged) {
   setModelColor(S.appearance.modelColor);
   if (colorChanged) {
@@ -1465,7 +1960,8 @@ function renderDetail() {
   if (stats && stats.failed) stats = null;
   const fmt = (n, d = 1) => n.toLocaleString('pl-PL', { maximumFractionDigits: d, minimumFractionDigits: d });
   const statHtml = (s) => s ? `
-      <div class="stat wide dims"><div class="k">Wymiary (X × Y × Z)</div><div class="v">${fmt(s.x)} × ${fmt(s.y)} × ${fmt(s.z)} mm</div></div>
+      ${s.plates ? (() => { const big = s.plates.reduce((m, p) => (p.x * p.y > m.x * m.y ? p : m), s.plates[0]); return `<div class="stat wide dims"><div class="k">${s.plates.length} płyty · największa (X × Y × Z)</div><div class="v">${fmt(big.x)} × ${fmt(big.y)} × ${fmt(big.z)} mm</div></div>`; })()
+        : `<div class="stat wide dims"><div class="k">Wymiary (X × Y × Z)</div><div class="v">${fmt(s.x)} × ${fmt(s.y)} × ${fmt(s.z)} mm</div></div>`}
       ${s.volume ? `<div class="stat"><div class="k">Objętość</div><div class="v">${fmt(s.volume, 2)} cm³</div></div>` : ''}
       ${s.tris ? `<div class="stat"><div class="k">Trójkąty</div><div class="v">${s.tris.toLocaleString('pl-PL')}</div></div>` : ''}`
     : f.viewable ? `<div class="stat wide dims"><div class="k">Wymiary</div><div class="v" style="color:var(--dim)">liczenie…</div></div>` : '';
@@ -1495,10 +1991,14 @@ function renderDetail() {
     <datalist id="allTags">${[...new Set(Object.values(lib.meta).flatMap((x) => x.tags || []))].map((t) => `<option value="${esc(t)}">`).join('')}</datalist>
     <div class="label">Źródło (link do Printables, MakerWorld, Thingiverse…)</div>
     <div class="srcrow"><input class="field sm" id="dSrc" value="${esc(m.source || '')}" placeholder="${esc(urlFromText(m.notes) || 'https://…')}" spellcheck="false"><button class="btn" id="dSrcOpen" ${m.source || urlFromText(m.notes) ? '' : 'disabled'}>Otwórz ↗</button></div>
+    <div class="label">Kolekcje</div>
+    <div class="tag-editor colls-edit">${(m.collections || []).map((id) => collections().find((c) => c.id === id)).filter(Boolean).map((c) => `<span class="tag"><span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)}<span class="x" data-rmcoll="${esc(c.id)}">✕</span></span>`).join('')}<button class="linkbtn" id="dAddColl">+ dodaj do kolekcji</button></div>
+    <div class="label">Miniatura</div>
+    <div class="thumb-btns"><button class="btn" id="thView" title="Ustaw miniaturę z bieżącego kąta kamery w podglądzie">Z obecnego widoku</button><button class="btn" id="thImg" title="Np. zdjęcie gotowego wydruku">Wybierz zdjęcie…</button>${m.thumbView || f.image ? '<button class="btn" id="thReset">Przywróć domyślną</button>' : ''}</div>
     <div class="label">Notatki</div>
     <textarea class="notes" id="dNotes" placeholder="np. ustawienia druku, filament, podpory, link do źródła…">${esc(m.notes || '')}</textarea>
     <div class="btns">
-      <button class="btn primary" id="dOpen">Otwórz</button>
+      <span class="split"><button class="btn primary" id="dOpen">${esc(openLabel())}</button>${openMenuItems([rel], false).length ? '<button class="btn primary caret" id="dOpenMore" title="Inne programy">▾</button>' : ''}</span>
       <button class="btn" id="dReveal">Pokaż w Eksploratorze</button>
       <button class="btn" id="dMove">Przenieś…</button>
       <button class="btn danger" id="dDel">Usuń</button>
@@ -1527,7 +2027,20 @@ function renderDetail() {
   const saveNotes = async () => { clearTimeout(nt); if ((metaOf(rel).notes || '') !== notes.value) { await setMeta(rel, { notes: notes.value }); renderGridSoft(); } };
   notes.oninput = () => { clearTimeout(nt); nt = setTimeout(saveNotes, 700); };
   notes.onblur = saveNotes;
-  $('#dOpen').onclick = () => api.open(rel).catch((er) => toast(er.message, true));
+  $('#dOpen').onclick = () => openDefault([rel]);
+  const dom = $('#dOpenMore');
+  if (dom) dom.onclick = (e) => { const r = e.currentTarget.getBoundingClientRect(); ctxMenu(r.left, r.bottom + 4, openMenuItems([rel], false)); };
+  $('#thView').onclick = () => snapThumbFromView(rel);
+  $('#thImg').onclick = async () => { const r = await safe(() => api.pickImageFor(rel)); if (r) { thumbs.delete(rel); toast('Ustawiono zdjęcie jako miniaturę'); await reload(); } };
+  const thR = $('#thReset');
+  if (thR) thR.onclick = async () => {
+    if (f.image && !(await confirmModal('Usunąć obrazek miniatury?', `Plik ${esc(baseName(f.image))} trafi do Kosza.`, 'Usuń'))) return;
+    if (f.image) await safe(() => api.removeImage(f.image));
+    await setMeta(rel, { thumbView: null });
+    thumbs.delete(rel); await reload(); requestThumb(rel, true, true);
+  };
+  body.querySelectorAll('[data-rmcoll]').forEach((x) => x.onclick = () => removeFromCollection(x.dataset.rmcoll, [rel]));
+  const ac = $('#dAddColl'); if (ac) ac.onclick = () => pickCollectionModal([rel]);
   const srcIn = $('#dSrc');
   srcIn.onchange = async () => {
     let v = srcIn.value.trim();
@@ -1552,7 +2065,7 @@ function srcTxt(x) { return x === 'ręcznie' ? 'wpisane ręcznie' : x === 'szacu
 function pricingSectionHtml(f) {
   const d = printData(f);
   const has = d.grams != null;
-  const r = has ? priceItems([{ parts: d.parts.map((p) => ({ grams: p.grams || 0, filament: p.filament })), minutes: d.minutes || 0, qty: 1 }], P()) : null;
+  const r = has ? priceItems([{ parts: d.parts.map((p) => ({ grams: p.grams || 0, filament: p.filament })), minutes: d.minutes || 0, qty: 1, plates: d.plates }], P()) : null;
   const manual = metaOf(f.rel).print || {};
   const c = cur();
   let slotsHtml;
@@ -1579,8 +2092,11 @@ function pricingSectionHtml(f) {
   const hint = [d.gramsSrc && `gramy: ${srcTxt(d.gramsSrc)}`, d.minutesSrc && `czas: ${srcTxt(d.minutesSrc)}`].filter(Boolean).join(' · ');
   const est = d.gramsSrc === 'szacunek' || d.gramsSrc === 'mieszane';
   const stockWarn = has ? stockWarnings(d.parts.map((p) => ({ filament: p.filament, grams: p.grams || 0 }))) : '';
+  const platesHtml = d.plates > 1 ? `<div class="plates-box"><div class="mc-head"><span>${d.plates} płyty w pliku</span><small>każda płyta = osobny wydruk</small></div>
+      ${d.plateList.map((pl) => `<div class="plate-row" data-plate="${pl.index}"><b>Płyta ${pl.id}</b><span>${fmtNum(pl.x, 0)} × ${fmtNum(pl.y, 0)} × ${fmtNum(pl.z, 0)} mm</span><span>${pl.grams != null ? fmtNum(pl.grams, 1) + ' g' : fmtNum(pl.volume, 1) + ' cm³'}</span><span>${pl.minutes != null ? fmtDuration(pl.minutes) : ''}</span></div>`).join('')}</div>` : '';
   return `<div class="label">Wycena <button class="linkbtn" id="pSet">ustawienia</button></div>
     <div class="pricebox">
+      ${platesHtml}
       ${slotsHtml}
       ${hint ? `<div class="phint ${est ? 'est' : ''}">${esc(hint)}${d.gramsSrc === 'szacunek' ? ' — dla dokładnej wyceny potnij model w slicerze' : ''}</div>` : ''}
       ${stockWarn}
@@ -1598,6 +2114,7 @@ function bindPricingSection(f) {
   const rel = f.rel;
   const after = () => { renderDetail(); if (st.special === 'order') renderOrder(); };
   $('#pSet').onclick = () => openSettings('pricing');
+  document.querySelectorAll('#detailBody .plate-row').forEach((row) => row.onclick = () => { const k = +row.dataset.plate; setPlateView(viewPlate === k ? null : k); });
   $('#pAdd').onclick = () => addToOrder([rel]);
   document.querySelectorAll('#detailBody select[data-slot]').forEach((sel) => sel.onchange = async () => {
     const i = +sel.dataset.slot, v = sel.value || null;
@@ -1648,6 +2165,7 @@ async function loadPreview(f) {
   viewer.clear();
   viewer.currentRel = null;
   tools.hidden = true;
+  $('#vPlate').hidden = true;
   if (!f.viewable) {
     const t = thumbs.get(f.rel);
     msg.innerHTML = t && t !== 'none' ? `<img src="${t}">` : `Brak podglądu 3D dla .${esc(f.ext)}<br>Kliknij „Otwórz”, aby otworzyć w programie.`;
@@ -1665,6 +2183,10 @@ async function loadPreview(f) {
     try { storeParsedAnalysis(f, parsed); } catch (e) { console.warn(e); }
     viewer.show(parsed);
     viewer.setSlotColors(slotColors(f));
+    viewPlate = null;
+    const vp = $('#vPlate');
+    if (parsed.plates && parsed.plates.length > 1) { vp.innerHTML = `<option value="">Wszystkie płyty (${parsed.plates.length})</option>` + parsed.plates.map((p) => `<option value="${p.index}">Płyta ${p.id}</option>`).join(''); vp.hidden = false; }
+    else vp.hidden = true;
     if (!hadColors && token === viewToken && focused === f.rel && !document.activeElement?.closest('#detailBody')) setTimeout(() => renderDetail(), 0);
     viewer.currentRel = f.rel + f.mtime;
     msg.innerHTML = '';
@@ -1679,7 +2201,16 @@ async function loadPreview(f) {
   }
 }
 
+let viewPlate = null;
+function setPlateView(k) {
+  viewPlate = k;
+  viewer.showPlate && viewer.showPlate(k);
+  document.querySelectorAll('#detailBody .plate-row').forEach((r) => r.classList.toggle('on', +r.dataset.plate === k));
+  const ps = $('#vPlate'); if (ps) ps.value = k == null ? '' : String(k);
+}
+$('#vPlate').onchange = (e) => setPlateView(e.target.value === '' ? null : +e.target.value);
 $('#vReset').onclick = () => viewer.resetView();
+$('#vSnap').onclick = () => { if (focused) snapThumbFromView(focused); };
 $('#vWire').onclick = (e) => { viewer.setWireframe(!viewer.wire); e.currentTarget.classList.toggle('on', viewer.wire); };
 $('#vTravel').onclick = (e) => { viewer.toggleTravel(); e.currentTarget.classList.toggle('on'); };
 
@@ -1712,7 +2243,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { sel.clear(); focused = null; updateSelectionClasses(); renderDetail(); return; }
   if (e.key === 'Delete' && sel.size) { trashItems([...sel], false); return; }
   if (e.key === 'F2' && sel.size === 1) { renameItem([...sel][0], false); return; }
-  if (e.key === 'Enter' && sel.size === 1) { api.open([...sel][0]).catch((er) => toast(er.message, true)); return; }
+  if (e.key === 'Enter' && sel.size) { openDefault([...sel]); return; }
   if (e.key.toLowerCase() === 'f' && sel.size) { const rels = [...sel]; const all = rels.every((r) => metaOf(r).favorite); setMetaMany(rels, () => ({ favorite: !all })); return; }
   if (['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp'].includes(e.key) && visible.length) {
     e.preventDefault();
@@ -1732,10 +2263,14 @@ orderNav.addEventListener('dragleave', () => orderNav.classList.remove('drop-hov
 orderNav.addEventListener('drop', (e) => { e.preventDefault(); orderNav.classList.remove('drop-hover'); const raw = e.dataTransfer.getData('application/x-modelvault'); if (raw && dragPayload?.kind === 'files') addToOrder(JSON.parse(raw)); });
 $('#settingsBtn').onclick = () => openSettings();
 $('#ordersNav').onclick = () => lib && setView({ special: 'orders' });
+$('#queueNav').onclick = () => lib && setView({ special: 'queue' });
+$('#clientsNav').onclick = () => S && setView({ special: 'clients' });
+$('#newCollBtn').onclick = () => lib && newCollection(sel.size ? [...sel] : []);
 $('#stockNav').onclick = () => S && setView({ special: 'stock' });
 
 (async () => {
   S = await api.getSettings();
+  if (!S.slicers || !S.slicers.list) { try { S.slicers = await api.slicersDetect(); } catch {} }
   setModelColor(S.appearance.modelColor);
   await reload();
 })();

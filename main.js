@@ -7,6 +7,10 @@ const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
 const crypto = require('crypto');
+const os = require('os');
+const { spawn } = require('child_process');
+let fflate = null; try { fflate = require('fflate'); } catch {}
+let autoUpdater = null; try { ({ autoUpdater } = require('electron-updater')); } catch {}
 
 const META_FILE = '.modelvault.json';
 const VIEWABLE = new Set(['stl', 'obj', '3mf', 'ply', 'gcode']);
@@ -58,6 +62,14 @@ const DEFAULT_SETTINGS = {
   },
   orders: [],
   stockLog: [],
+  clients: [],
+  business: { name: '', address: '', email: '', phone: '', taxId: '', bank: '', footer: 'Dziękuję za zainteresowanie!', validityDays: 14, showItemPrices: true },
+  queue: { printers: 1, hoursPerDay: 14, startHour: 8, includeQuoted: false },
+  slicers: { list: null, default: null },
+  inbox: { enabled: false, folders: null, mode: 'move', target: 'Do posortowania', unzip: true, enabledAt: 0, processed: {} },
+  thumbs: { preset: 'iso' },
+  backup: { auto: true, keep: 14, last: 0 },
+  updates: { auto: true },
   filaments: [
     { id: 'f1', name: 'PlastSpaw PLA+', color: 'beżowy', hex: '#d8c4a2', type: 'PLA', pricePerKg: 45, density: 1.24, spoolWeight: 1000, remaining: null },
     { id: 'f2', name: 'PlastSpaw PLA+', color: 'zielony', hex: '#3f9c4f', type: 'PLA', pricePerKg: 45, density: 1.24, spoolWeight: 1000, remaining: null },
@@ -70,9 +82,10 @@ const DEFAULT_SETTINGS = {
   order: { name: '', items: [] },
 };
 let settings = null;
-function loadSettings() {
-  let s = null;
-  try { s = JSON.parse(fs.readFileSync(settingsPath(), 'utf8')); } catch {}
+function loadSettingsFromObject() { const s = settings; settings = null; loadSettings(s); }
+function loadSettings(given) {
+  let s = given || null;
+  if (!given) { try { s = JSON.parse(fs.readFileSync(settingsPath(), 'utf8')); } catch {} }
   const d = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
   settings = s ? {
     ...d, ...s,
@@ -81,6 +94,14 @@ function loadSettings() {
     stock: { ...d.stock, ...(s.stock || {}) },
     orders: Array.isArray(s.orders) ? s.orders : [],
     stockLog: Array.isArray(s.stockLog) ? s.stockLog : [],
+    clients: Array.isArray(s.clients) ? s.clients : [],
+    business: { ...d.business, ...(s.business || {}) },
+    queue: { ...d.queue, ...(s.queue || {}) },
+    slicers: { ...d.slicers, ...(s.slicers || {}) },
+    inbox: { ...d.inbox, ...(s.inbox || {}) },
+    thumbs: { ...d.thumbs, ...(s.thumbs || {}) },
+    backup: { ...d.backup, ...(s.backup || {}) },
+    updates: { ...d.updates, ...(s.updates || {}) },
     filaments: Array.isArray(s.filaments) ? s.filaments : d.filaments,
     order: s.order && Array.isArray(s.order.items) ? s.order : d.order,
   } : d;
@@ -222,7 +243,7 @@ async function scan() {
   if (changed) saveMetaSoon();
 
   folders.sort((a, b) => a.localeCompare(b, 'pl', { numeric: true, sensitivity: 'base' }));
-  return { root, folders, files, meta: meta.files };
+  return { root, folders, files, meta: meta.files, collections: meta.collections || [] };
 }
 
 // ---------- watcher ----------
@@ -249,6 +270,7 @@ async function setRoot(p) {
   saveConfig();
   await loadMeta();
   startWatcher();
+  if (settings) startInbox();
 }
 
 // ---------- IPC ----------
@@ -354,7 +376,9 @@ handle('meta:set', async (rel, patch) => {
   if (next.print && Array.isArray(next.print.slots)) { next.print.slots = next.print.slots.map((x) => x || null); if (!next.print.slots.some((x) => x && (x.filamentId || x.grams != null))) delete next.print.slots; }
   if (next.print && !Object.keys(next.print).length) delete next.print;
   if (next.source === '') delete next.source;
-  const empty = !(next.tags && next.tags.length) && !next.notes && !next.status && !next.favorite && !next.print && !next.source;
+  if (Array.isArray(next.collections) && !next.collections.length) delete next.collections;
+  if (next.thumbView === null) delete next.thumbView;
+  const empty = !(next.tags && next.tags.length) && !next.notes && !next.status && !next.favorite && !next.print && !next.source && !next.collections && !next.thumbView;
   if (empty) delete meta.files[rel]; else meta.files[rel] = next;
   saveMetaSoon();
   return meta.files[rel] || null;
@@ -394,7 +418,15 @@ handle('shell:external', async (url) => {
   await shell.openExternal(String(url));
   return true;
 });
-handle('settings:set', async (next) => { settings = next; saveSettings(); return true; });
+handle('settings:set', async (next) => {
+  // pola prowadzone przez proces główny nie są nadpisywane przez okno
+  const processed = settings.inbox.processed, last = settings.backup.last;
+  settings = next;
+  settings.inbox = { ...settings.inbox, processed };
+  settings.backup = { ...settings.backup, last };
+  saveSettings();
+  return true;
+});
 handle('settings:defaults', async () => JSON.parse(JSON.stringify(DEFAULT_SETTINGS)));
 handle('clipboard:write', async (text) => { clipboard.writeText(String(text)); return true; });
 handle('file:save', async (defaultName, content) => {
@@ -409,12 +441,313 @@ handle('image:read', async (rel) => {
   return `data:image/${ext};base64,` + (await fsp.readFile(abs)).toString('base64');
 });
 
+handle('image:pickFor', async (rel) => {
+  const r = await dialog.showOpenDialog(win, { title: 'Wybierz zdjęcie / obrazek miniatury', properties: ['openFile'], filters: [{ name: 'Obrazy', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
+  if (r.canceled || !r.filePaths[0]) return null;
+  const src = r.filePaths[0];
+  const model = toAbs(rel);
+  const base = model.slice(0, -path.extname(model).length);
+  for (const ie of IMAGES) { const old = `${base}.${ie}`; if (await exists(old)) await shell.trashItem(old).catch(() => fsp.rm(old, { force: true })); }
+  const dst = `${base}.${extOf(src) === 'jpeg' ? 'jpg' : extOf(src)}`;
+  await fsp.copyFile(src, dst);
+  return toRel(dst);
+});
+handle('image:removeFor', async (imgRel) => { await shell.trashItem(toAbs(imgRel)); return true; });
+handle('collections:set', async (list) => { meta.collections = Array.isArray(list) ? list : []; await saveMetaNow(); return meta.collections; });
+
+// ---------- kopie zapasowe ----------
+const backupDir = () => path.join(app.getPath('userData'), 'backups');
+async function createBackup(reason = 'auto') {
+  await fsp.mkdir(backupDir(), { recursive: true });
+  const d0 = new Date(), z = (n) => String(n).padStart(2, '0');
+  const stamp = `${d0.getFullYear()}-${z(d0.getMonth() + 1)}-${z(d0.getDate())}-${z(d0.getHours())}-${z(d0.getMinutes())}-${z(d0.getSeconds())}`;
+  const data = { app: 'ModelVault', kind: 'backup', version: app.getVersion(), createdAt: Date.now(), reason, settings, library: root ? { root, meta } : null };
+  const file = path.join(backupDir(), `modelvault-${stamp}.json`);
+  await fsp.writeFile(file, JSON.stringify(data));
+  settings.backup.last = Date.now(); saveSettings();
+  const all = (await fsp.readdir(backupDir())).filter((n) => /^modelvault-.*\.json$/.test(n)).sort().reverse();
+  for (const old of all.slice(Math.max(3, settings.backup.keep || 14))) await fsp.rm(path.join(backupDir(), old), { force: true });
+  return path.basename(file);
+}
+async function maybeAutoBackup() {
+  if (!settings.backup.auto) return;
+  if (Date.now() - (settings.backup.last || 0) > 20 * 3600 * 1000) { try { await createBackup('auto'); } catch (e) { console.warn('backup', e); } }
+}
+function applyBackupData(data, withLibrary) {
+  if (!data || data.app !== 'ModelVault' || !data.settings) throw new Error('To nie jest kopia ModelVault');
+  const keepSlicers = settings.slicers;
+  settings = data.settings; loadSettingsFromObject();
+  if (!settings.slicers || !settings.slicers.list) settings.slicers = keepSlicers;
+  saveSettings();
+  if (withLibrary && data.library && data.library.meta && root) { meta = data.library.meta; return saveMetaNow(); }
+}
+handle('backup:list', async () => {
+  try {
+    const names = (await fsp.readdir(backupDir())).filter((n) => /^modelvault-.*\.json$/.test(n)).sort().reverse();
+    return Promise.all(names.map(async (n) => ({ name: n, size: (await fsp.stat(path.join(backupDir(), n))).size })));
+  } catch { return []; }
+});
+handle('backup:create', async () => createBackup('manual'));
+handle('backup:restore', async (name, withLibrary) => {
+  const data = JSON.parse(await fsp.readFile(path.join(backupDir(), path.basename(name)), 'utf8'));
+  await createBackup('przed przywróceniem');
+  await applyBackupData(data, withLibrary);
+  return settings;
+});
+handle('backup:export', async () => {
+  const r = await dialog.showSaveDialog(win, { defaultPath: `ModelVault-kopia-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: 'Kopia ModelVault', extensions: ['json'] }] });
+  if (r.canceled || !r.filePath) return null;
+  await fsp.writeFile(r.filePath, JSON.stringify({ app: 'ModelVault', kind: 'export', version: app.getVersion(), createdAt: Date.now(), settings, library: root ? { root, meta } : null }, null, 1));
+  return r.filePath;
+});
+handle('backup:import', async (withLibrary) => {
+  const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: 'Kopia ModelVault', extensions: ['json'] }] });
+  if (r.canceled || !r.filePaths[0]) return null;
+  const data = JSON.parse(await fsp.readFile(r.filePaths[0], 'utf8'));
+  await createBackup('przed importem');
+  await applyBackupData(data, withLibrary);
+  return settings;
+});
+handle('backup:openDir', async () => { await fsp.mkdir(backupDir(), { recursive: true }); await shell.openPath(backupDir()); return true; });
+
+// ---------- slicery ----------
+const env = (k) => process.env[k] || '';
+const PF = () => [env('ProgramFiles') || 'C:\\Program Files', env('ProgramFiles(x86)') || 'C:\\Program Files (x86)', path.join(env('LOCALAPPDATA') || path.join(os.homedir(), 'AppData', 'Local'), 'Programs')];
+const KNOWN_SLICERS = [
+  { id: 'bambu', name: 'Bambu Studio', win: [['Bambu Studio', 'bambu-studio.exe']], mac: ['BambuStudio.app', 'Bambu Studio.app'], linux: ['bambu-studio', 'BambuStudio'] },
+  { id: 'orca', name: 'OrcaSlicer', win: [['OrcaSlicer', 'orca-slicer.exe']], mac: ['OrcaSlicer.app'], linux: ['orca-slicer', 'OrcaSlicer'] },
+  { id: 'prusa', name: 'PrusaSlicer', win: [['Prusa3D\\PrusaSlicer', 'prusa-slicer.exe'], ['PrusaSlicer', 'prusa-slicer.exe']], mac: ['Original Prusa Drivers/PrusaSlicer.app', 'PrusaSlicer.app'], linux: ['prusa-slicer', 'PrusaSlicer'] },
+  { id: 'cura', name: 'UltiMaker Cura', winPrefix: [['UltiMaker Cura', ['UltiMaker-Cura.exe', 'Cura.exe']], ['Ultimaker Cura', ['Ultimaker-Cura.exe', 'Cura.exe']]], mac: ['UltiMaker Cura.app', 'Ultimaker Cura.app'], linux: ['cura', 'UltiMaker-Cura'] },
+  { id: 'creality', name: 'Creality Print', winPrefix: [['Creality Print', ['CrealityPrint.exe', 'Creality Print.exe']]], mac: ['CrealityPrint.app', 'Creality Print.app'], linux: ['CrealityPrint'] },
+  { id: 'elegoo', name: 'ElegooSlicer', win: [['ElegooSlicer', 'elegoo-slicer.exe']], mac: ['ElegooSlicer.app'], linux: ['elegoo-slicer'] },
+  { id: 'anycubic', name: 'Anycubic Slicer Next', win: [['AnycubicSlicerNext', 'AnycubicSlicerNext.exe'], ['Anycubic Slicer Next', 'AnycubicSlicerNext.exe']], mac: ['AnycubicSlicerNext.app'], linux: [] },
+  { id: 'superslicer', name: 'SuperSlicer', win: [['SuperSlicer', 'superslicer.exe']], mac: ['SuperSlicer.app'], linux: ['superslicer'] },
+  { id: 'flashprint', name: 'FlashPrint', winPrefix: [['FlashForge\\FlashPrint', ['FlashPrint.exe']]], mac: ['FlashPrint 5.app'], linux: [] },
+];
+async function which(cmd) {
+  for (const d of (process.env.PATH || '').split(path.delimiter)) { const p = path.join(d, cmd); if (await exists(p)) return p; }
+  return null;
+}
+async function detectSlicers() {
+  const found = [];
+  for (const k of KNOWN_SLICERS) {
+    let hit = null;
+    if (process.platform === 'win32') {
+      for (const base of PF()) {
+        for (const [dir, exe] of k.win || []) { const p = path.join(base, dir, exe); if (await exists(p)) { hit = p; break; } }
+        if (!hit) for (const [prefix, exes] of k.winPrefix || []) {
+          const parent = path.join(base, path.dirname(prefix) === '.' ? '' : path.dirname(prefix));
+          const pre = path.basename(prefix);
+          let names = []; try { names = (await fsp.readdir(parent)).filter((n) => n.startsWith(pre)).sort().reverse(); } catch {}
+          for (const n of names) { for (const e of exes) { const p = path.join(parent, n, e); if (await exists(p)) { hit = p; break; } } if (hit) break; }
+          if (hit) break;
+        }
+        if (hit) break;
+      }
+    } else if (process.platform === 'darwin') {
+      for (const a of k.mac || []) { const p = path.join('/Applications', a); if (await exists(p)) { hit = p; break; } }
+    } else {
+      for (const c of k.linux || []) { const p = await which(c); if (p) { hit = p; break; } }
+    }
+    if (hit) found.push({ id: k.id, name: k.name, path: hit });
+  }
+  return found;
+}
+async function mergeDetected() {
+  const det = await detectSlicers();
+  const cur = settings.slicers.list || [];
+  const out = [...cur];
+  for (const d of det) {
+    const ex = out.find((x) => x.id === d.id && !x.custom);
+    if (ex) { if (!(await exists(ex.path))) ex.path = d.path; }
+    else out.push({ ...d, enabled: true, custom: false });
+  }
+  for (const x of out) x.available = !!x.path && await exists(x.path);
+  settings.slicers.list = out;
+  if (!settings.slicers.default || (settings.slicers.default !== 'system' && !out.some((x) => x.id === settings.slicers.default && x.available && x.enabled))) {
+    const first = out.find((x) => x.available && x.enabled);
+    settings.slicers.default = first ? first.id : 'system';
+  }
+  saveSettings();
+  return settings.slicers;
+}
+handle('slicers:detect', async () => mergeDetected());
+handle('slicers:pick', async () => {
+  const r = await dialog.showOpenDialog(win, { title: 'Wskaż plik programu slicera', properties: ['openFile'], filters: process.platform === 'win32' ? [{ name: 'Program', extensions: ['exe'] }] : [] });
+  return r.canceled ? null : r.filePaths[0];
+});
+handle('slicers:open', async (slicerPath, rels) => {
+  const files = rels.map(toAbs);
+  if (!slicerPath || slicerPath === 'system') { for (const f of files) { const e = await shell.openPath(f); if (e) throw new Error(e); } return true; }
+  if (!(await exists(slicerPath))) throw new Error('Nie znaleziono programu: ' + slicerPath);
+  const child = process.platform === 'darwin' && slicerPath.endsWith('.app')
+    ? spawn('open', ['-a', slicerPath, ...files], { detached: true, stdio: 'ignore' })
+    : spawn(slicerPath, files, { detached: true, stdio: 'ignore', cwd: path.dirname(slicerPath) });
+  child.on('error', () => {});
+  child.unref();
+  return true;
+});
+
+// ---------- skrzynka „Do posortowania” (Pobrane) ----------
+const INBOX_EXT = new Set([...VIEWABLE, ...OTHER]);
+const TEMP_EXT = /\.(crdownload|part|partial|tmp|download|opdownload)$/i;
+let inboxWatchers = [];
+let inboxBusy = false;
+const inboxPending = new Set();
+function defaultInboxFolders() { try { return [app.getPath('downloads')]; } catch { return [path.join(os.homedir(), 'Downloads')]; } }
+async function waitStable(p) {
+  let last = -1;
+  for (let i = 0; i < 20; i++) {
+    let st; try { st = await fsp.stat(p); } catch { return false; }
+    if (st.size === last && st.size > 0) return true;
+    last = st.size;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return false;
+}
+function safeJoin(base, rel) {
+  const parts = rel.split(/[\\/]+/).filter((x) => x && x !== '.' && x !== '..').map((x) => x.replace(/[:*?"<>|]/g, '_'));
+  return path.join(base, ...parts);
+}
+async function processInboxFile(abs) {
+  const ib = settings.inbox;
+  if (!root || !ib.enabled) return null;
+  const name = path.basename(abs);
+  const ext = extOf(name);
+  if (TEMP_EXT.test(name) || name.startsWith('.')) return null;
+  const isZip = ext === 'zip';
+  if (!isZip && !INBOX_EXT.has(ext)) return null;
+  let st; try { st = await fsp.stat(abs); } catch { return null; }
+  const key = abs.toLowerCase();
+  if (ib.processed[key] && ib.processed[key] === st.mtimeMs) return null;
+  if (!(await waitStable(abs))) return null;
+  st = await fsp.stat(abs);
+  const target = toAbs(ib.target || 'Do posortowania');
+  await fsp.mkdir(target, { recursive: true });
+  let added = [];
+  if (isZip) {
+    if (!ib.unzip || !fflate || st.size > 600 * 1048576) return null;
+    const buf = await fsp.readFile(abs);
+    let entries;
+    try { entries = fflate.unzipSync(new Uint8Array(buf), { filter: (f) => { const e = extOf(f.name); return INBOX_EXT.has(e) || IMAGES.has(e) || /\.(txt|md|pdf)$/i.test(f.name); } }); } catch { return null; }
+    const models = Object.keys(entries).filter((n) => INBOX_EXT.has(extOf(n)) && !n.endsWith('/'));
+    if (!models.length) { ib.processed[key] = st.mtimeMs; saveSettings(); return null; }
+    const dest = await uniquePath(path.join(target, path.basename(name, '.zip').replace(/[:*?"<>|]/g, '_')));
+    for (const [n, data] of Object.entries(entries)) {
+      if (n.endsWith('/') || n.startsWith('__MACOSX')) continue;
+      const out = safeJoin(dest, n);
+      if (!out.startsWith(dest + path.sep)) continue;
+      await fsp.mkdir(path.dirname(out), { recursive: true });
+      await fsp.writeFile(out, data);
+      if (INBOX_EXT.has(extOf(n))) added.push(toRel(out));
+    }
+  } else {
+    const dst = await uniquePath(path.join(target, name));
+    if (ib.mode === 'copy') await fsp.copyFile(abs, dst); else await moveFs(abs, dst);
+    added.push(toRel(dst));
+    const base = abs.slice(0, -path.extname(abs).length);
+    for (const ie of IMAGES) {
+      const img = `${base}.${ie}`;
+      if (await exists(img)) { const d2 = dst.slice(0, -path.extname(dst).length) + '.' + ie; if (ib.mode === 'copy') await fsp.copyFile(img, d2); else await moveFs(img, d2); }
+    }
+  }
+  ib.processed[key] = st.mtimeMs;
+  const keys = Object.keys(ib.processed); if (keys.length > 3000) for (const k of keys.slice(0, keys.length - 3000)) delete ib.processed[k];
+  saveSettings();
+  return added;
+}
+async function drainInbox() {
+  if (inboxBusy) return;
+  inboxBusy = true;
+  try {
+    while (inboxPending.size) {
+      const abs = inboxPending.values().next().value;
+      inboxPending.delete(abs);
+      try {
+        const added = await processInboxFile(abs);
+        if (added && added.length && win) win.webContents.send('inbox:added', { file: path.basename(abs), added });
+      } catch (e) { console.warn('inbox', abs, e); }
+    }
+  } finally { inboxBusy = false; }
+}
+async function scanInbox(includeExisting = false) {
+  const ib = settings.inbox;
+  let n = 0;
+  for (const dir of ib.folders || []) {
+    let names = []; try { names = await fsp.readdir(dir); } catch { continue; }
+    for (const nm of names) {
+      const abs = path.join(dir, nm);
+      let st; try { st = await fsp.stat(abs); } catch { continue; }
+      if (!st.isFile()) continue;
+      if (!includeExisting && st.mtimeMs < (ib.enabledAt || 0)) continue;
+      const e = extOf(nm);
+      if (e === 'zip' || INBOX_EXT.has(e)) { inboxPending.add(abs); n++; }
+    }
+  }
+  drainInbox();
+  return n;
+}
+function startInbox() {
+  for (const w of inboxWatchers) { try { w.close(); } catch {} }
+  inboxWatchers = [];
+  const ib = settings.inbox;
+  if (!ib.folders) { ib.folders = defaultInboxFolders(); saveSettings(); }
+  if (!ib.enabled || !root) return;
+  for (const dir of ib.folders) {
+    try {
+      const w = fs.watch(dir, (ev, fname) => { if (fname) { inboxPending.add(path.join(dir, String(fname))); setTimeout(drainInbox, 800); } });
+      w.on('error', () => {});
+      inboxWatchers.push(w);
+    } catch (e) { console.warn('inbox watch', dir, e.message); }
+  }
+  scanInbox(false);
+}
+handle('inbox:apply', async () => { startInbox(); return settings.inbox; });
+handle('inbox:scanExisting', async () => scanInbox(true));
+handle('inbox:pickFolder', async () => { const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] }); return r.canceled ? null : r.filePaths[0]; });
+
+// ---------- PDF oferty ----------
+handle('pdf:save', async (html, defaultName) => {
+  const r = process.env.MV_PDF_OUT ? { filePath: process.env.MV_PDF_OUT } : await dialog.showSaveDialog(win, { defaultPath: defaultName, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+  if (r.canceled || !r.filePath) return null;
+  const tmp = path.join(os.tmpdir(), `modelvault-oferta-${Date.now()}.html`);
+  await fsp.writeFile(tmp, html, 'utf8');
+  const pw = new BrowserWindow({ show: false, webPreferences: { offscreen: false, javascript: false } });
+  try {
+    await pw.loadFile(tmp);
+    const pdf = await pw.webContents.printToPDF({ pageSize: 'A4', printBackground: true, margins: { marginType: 'none' } });
+    await fsp.writeFile(r.filePath, pdf);
+  } finally { pw.destroy(); fsp.rm(tmp, { force: true }).catch(() => {}); }
+  if (!process.env.MV_PDF_OUT) shell.openPath(r.filePath);
+  return r.filePath;
+});
+
+// ---------- aktualizacje ----------
+const isPortable = !!process.env.PORTABLE_EXECUTABLE_DIR || !!process.env.MV_PORTABLE || (app.isPackaged && !fs.existsSync(path.join(process.resourcesPath || '', 'app-update.yml')));
+function sendUpdate(state, extra = {}) { win && win.webContents.send('update:status', { state, ...extra }); }
+function setupUpdater() {
+  if (!autoUpdater || !app.isPackaged || isPortable || process.platform !== 'win32') return false;
+  autoUpdater.autoDownload = false;
+  autoUpdater.on('update-available', (i) => sendUpdate('available', { version: i.version }));
+  autoUpdater.on('update-not-available', () => sendUpdate('none'));
+  autoUpdater.on('download-progress', (p) => sendUpdate('progress', { percent: Math.round(p.percent) }));
+  autoUpdater.on('update-downloaded', (i) => sendUpdate('downloaded', { version: i.version }));
+  autoUpdater.on('error', (e) => sendUpdate('error', { message: String(e && e.message || e) }));
+  return true;
+}
+let updaterReady = false;
+handle('update:check', async () => { if (!updaterReady) return { supported: false, version: app.getVersion() }; await autoUpdater.checkForUpdates(); return { supported: true, version: app.getVersion() }; });
+handle('update:download', async () => { if (updaterReady) await autoUpdater.downloadUpdate(); return true; });
+handle('update:install', async () => { if (updaterReady) autoUpdater.quitAndInstall(); return true; });
+handle('app:version', async () => ({ version: app.getVersion(), updater: updaterReady, portable: isPortable, platform: process.platform }));
+
 // ---------- window ----------
 function createWindow() {
   win = new BrowserWindow({
     width: 1440, height: 900, minWidth: 980, minHeight: 600,
     backgroundColor: '#14161a',
     title: 'ModelVault',
+    icon: path.join(__dirname, 'renderer', 'icon.png'),
     autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
   });
@@ -440,6 +773,7 @@ function createWindow() {
 
 // programowy WebGL, gdy GPU jest niedostępne (VM, stare sterowniki)
 app.commandLine.appendSwitch('enable-unsafe-swiftshader');
+app.commandLine.appendSwitch('lang', 'pl');
 
 app.whenReady().then(async () => {
   loadConfig();
@@ -447,5 +781,11 @@ app.whenReady().then(async () => {
   const r = process.env.MV_ROOT || config.root;
   if (r && fs.existsSync(r)) await setRoot(r);
   createWindow();
+  mergeDetected().catch(() => {});
+  maybeAutoBackup();
+  setInterval(maybeAutoBackup, 3600 * 1000);
+  startInbox();
+  updaterReady = setupUpdater();
+  if (updaterReady && settings.updates.auto) setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 8000);
 });
 app.on('window-all-closed', async () => { clearTimeout(saveTimer); try { await saveMetaNow(); } catch {} app.quit(); });

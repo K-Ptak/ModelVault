@@ -2,13 +2,13 @@
 <html lang="pl">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-ZXnmStJs/Z5QLXez0rGmMP1S6Mt++GlZfIm0+PoOsSc='">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-5dhwk8L6ezq3UpFxxjeo1OUAh7uunRKuDdMPv1+rnI4='">
   <title>ModelVault</title>
   <link rel="stylesheet" href="styles.css">
   <script type="importmap">
     { "imports": {
-      "three": "../node_modules/three/build/three.module.js",
-      "three/addons/": "../node_modules/three/examples/jsm/"
+      "three": "./vendor/three/three.module.js",
+      "three/addons/": "./vendor/three/addons/"
     } }
   </script>
 </head>
@@ -39,8 +39,12 @@
       <div class="nav-group">
         <div class="nav-item" id="orderNav"><span class="ico">∑</span>Wycena zamówienia<span class="count" id="orderCount">0</span></div>
         <div class="nav-item" id="ordersNav"><span class="ico">≡</span>Zamówienia<span class="count" id="ordersCount">0</span></div>
+        <div class="nav-item" id="queueNav"><span class="ico">▤</span>Kolejka druku<span class="count" id="queueCount"></span></div>
+        <div class="nav-item" id="clientsNav"><span class="ico">☺</span>Klienci<span class="count" id="clientsCount"></span></div>
         <div class="nav-item" id="stockNav"><span class="ico">◎</span>Magazyn filamentów<span class="count" id="stockCount"></span></div>
       </div>
+      <div class="section-title"><span>Kolekcje</span><button class="icon-btn" id="newCollBtn" title="Nowa kolekcja">+</button></div>
+      <div class="colls" id="colls"></div>
       <div class="section-title">
         <span>Foldery</span>
         <button class="icon-btn" id="newFolderBtn" title="Nowy folder w zaznaczonym">+</button>
@@ -56,6 +60,8 @@
       <div class="order" id="order" hidden></div>
       <div class="order" id="orders" hidden></div>
       <div class="order" id="stock" hidden></div>
+      <div class="order" id="clients" hidden></div>
+      <div class="order" id="queue" hidden></div>
       <div class="empty" id="empty" hidden></div>
       <div class="drop-overlay" id="dropOverlay" hidden><div>Upuść, aby skopiować do <b id="dropTarget"></b></div></div>
     </main>
@@ -65,6 +71,8 @@
         <div class="viewer" id="viewer"></div>
         <div class="viewer-msg" id="viewerMsg"></div>
         <div class="viewer-tools" id="viewerTools">
+          <select id="vPlate" class="vplate" hidden title="Pokaż płytę"></select>
+          <button class="icon-btn" id="vSnap" title="Ustaw ten widok jako miniaturę">◉</button>
           <button class="icon-btn" id="vReset" title="Resetuj widok">⟲</button>
           <button class="icon-btn" id="vWire" title="Siatka (wireframe)">▦</button>
           <button class="icon-btn" id="vTravel" title="Ruchy jałowe (G-code)" hidden>↝</button>
@@ -77,6 +85,7 @@
   <div class="ctx" id="ctx" hidden></div>
   <div class="modal-back" id="modalBack" hidden><div class="modal" id="modal"></div></div>
   <div class="toasts" id="toasts"></div>
+  <div class="upd-banner" id="updBanner" hidden></div>
   <div class="drag-ghost" id="dragGhost"></div>
 
   <script type="module" src="app.js"></script>

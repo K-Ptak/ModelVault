@@ -1,25 +1,81 @@
 {
   "name": "modelvault",
   "productName": "ModelVault",
-  "version": "1.2.0",
-  "description": "Menedżer biblioteki modeli 3D do druku (STL, 3MF, OBJ, G-code)",
+  "version": "1.3.0",
+  "description": "Menedżer biblioteki modeli 3D z wyceną wydruków (STL, 3MF, OBJ, G-code)",
   "main": "main.js",
-  "author": "ModelVault",
+  "author": {
+    "name": "K-Ptak"
+  },
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win portable"
+    "test": "node --test test/core.test.mjs",
+    "dist": "electron-builder --win",
+    "release": "electron-builder --win --publish always",
+    "postinstall": "node scripts/vendor.js"
   },
   "dependencies": {
-    "three": "^0.187.0"
+    "electron-updater": "^6.8.11",
+    "fflate": "^0.8.3"
   },
   "devDependencies": {
-    "electron": "^45.5.0"
+    "electron": "^45.5.0",
+    "electron-builder": "^26.18.0",
+    "three": "^0.187.0"
   },
   "build": {
-    "appId": "pl.modelvault.app",
+    "appId": "pl.kptak.modelvault",
     "productName": "ModelVault",
-    "files": ["main.js", "preload.js", "renderer/**", "node_modules/three/build/three.module.js", "node_modules/three/build/three.core.js", "node_modules/three/examples/jsm/**", "package.json"],
-    "win": { "target": ["portable"] }
+    "copyright": "© K-Ptak",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**",
+      "package.json",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "ModelVault-${version}-win-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "ModelVault",
+      "artifactName": "ModelVault-Setup-${version}.exe"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "K-Ptak",
+        "repo": "ModelVault",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/K-Ptak/ModelVault.git"
   }
 }

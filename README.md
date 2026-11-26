@@ -1,9 +1,12 @@
 # ModelVault: menedżer biblioteki modeli 3D
 
-## Uruchomienie
-Rozpakuj `ModelVault-win-x64.zip` gdziekolwiek (np. `C:\Programy\ModelVault`) i odpal `ModelVault.exe`.
-Bez instalacji. Przy pierwszym starcie wskaż folder z modelami.
-(Windows SmartScreen może ostrzec o nieznanym wydawcy: „Więcej informacji” → „Uruchom mimo to”.)
+## Instalacja
+Pobierz z [Releases](https://github.com/K-Ptak/ModelVault/releases):
+- **`ModelVault-Setup-x.y.z.exe`** – instalator: skrót w menu Start i na pulpicie, **automatyczne aktualizacje**,
+- **`ModelVault-x.y.z-win-x64.zip`** – wersja przenośna: rozpakuj i uruchom `ModelVault.exe`, bez aktualizacji automatycznych.
+
+Przy pierwszym starcie wskaż folder z modelami. Windows SmartScreen może ostrzec o nieznanym
+wydawcy, bo aplikacja nie jest podpisana: „Więcej informacji” → „Uruchom mimo to”.
 
 ## Jak to działa
 - **Biblioteka to zwykły folder.** Podfoldery są kategoriami. Aplikacja niczego nie kopiuje
@@ -75,6 +78,50 @@ Zamówienie można wczytać z powrotem do wyceny.
 - **Źródło:** link do Printables / MakerWorld / Thingiverse przy modelu, otwierany jednym kliknięciem.
   Jeśli w notatce jest link, aplikacja go podpowie.
 
+## Wiele płyt w jednym pliku
+Eksporty z Bambu Studio / MakerWorld często mają kilka płyt w jednym STL (płyty leżą obok siebie
+co 1,2 × szerokość stołu). Aplikacja wykrywa płyty, pokazuje wymiary każdej z nich, pozwala obejrzeć
+pojedynczą płytę w podglądzie i liczy każdą płytę jako osobny wydruk (start drukarki + czas obsługi).
+W 3MF z Bambu Studio płyty są odczytywane wprost z pliku.
+
+## Slicery
+Aplikacja wykrywa zainstalowane slicery (Bambu Studio, OrcaSlicer, PrusaSlicer, UltiMaker Cura,
+Creality Print, ElegooSlicer, Anycubic Slicer Next, SuperSlicer, FlashPrint). Możesz też dodać własny,
+wskazując plik .exe. W Ustawienia → Slicery wybierasz domyślny slicer, który otwiera się po dwukliku,
+klawiszem Enter i przyciskiem „Otwórz”. Ukrywasz tam też te, których nie chcesz widzieć.
+Niezainstalowane slicery nie pojawiają się w menu.
+
+## Pobrane → „Do posortowania”
+Po włączeniu w Ustawienia → Pobrane aplikacja śledzi wybrane foldery (domyślnie Pobrane). Nowe pliki
+modeli przenosi lub kopiuje do folderu biblioteki „Do posortowania”. Archiwa ZIP z modelami
+(np. z Printables) rozpakowuje do osobnego folderu. Stamtąd przeciągasz modele do kategorii.
+
+## Miniatury
+- domyślny kąt kamery dla wszystkich miniatur (Ustawienia → Wygląd),
+- własny kąt dla modelu: obróć podgląd i kliknij ◉ (zapisywane w `.modelvault.json`),
+- własne zdjęcie, np. gotowego wydruku: kopiowane obok modelu jako `nazwa_modelu.jpg/png`.
+
+## Kolekcje
+Wirtualne grupy modeli, np. „Prezenty na święta” albo „Do sklepu”. Pliki się nie przenoszą,
+a jeden model może być w wielu kolekcjach. Modele dodajesz, przeciągając je na kolekcję
+albo przez menu pod prawym przyciskiem.
+
+## Klienci i oferty
+Baza klientów z liczbą zamówień, przychodem i zyskiem. Klienta wybierasz w wycenie.
+„Oferta PDF” generuje ofertę z miniaturami, materiałami, ilościami i cenami. Dane firmy
+ustawiasz w Ustawienia → Oferta.
+
+## Kolejka druku i statystyki
+- **Kolejka:** zamówienia „W druku” w ustalonej kolejności, z przewidywanym startem i końcem.
+  Uwzględnia liczbę drukarek i godziny pracy. Wykres Gantta pokazuje terminy i ostrzega przed spóźnieniem.
+- **Statystyki** (w widoku Zamówienia): przychód, koszt i zysk z 12 miesięcy, zysk według kategorii
+  (folderów) i zużycie filamentów.
+
+## Kopie zapasowe
+Codzienna automatyczna kopia ustawień, filamentów, magazynu, klientów, zamówień oraz tagów i notatek
+biblioteki (14 ostatnich). Do tego ręczny eksport i import do pliku. Przed przywróceniem kopii
+aplikacja zawsze robi kopię bieżącego stanu.
+
 ## Ustawienia (Ctrl+,)
 - **Wygląd:** kolor modelu w podglądzie i na miniaturach, opcja użycia koloru przypisanego filamentu.
 - **Wycena:** wszystkie parametry kosztów, domyślny filament, waluta.
@@ -96,9 +143,17 @@ Zamówienie można wczytać z powrotem do wyceny.
 
 Pliki przeciągnięte z Eksploratora do okna są **kopiowane** do bieżącego folderu.
 
-## Kod źródłowy
-Electron + three.js. Z folderu źródeł:
+## Rozwój
+Electron + three.js.
 ```
-npm install
-npm start
+npm install      # instaluje zależności i kopiuje potrzebne pliki three.js do renderer/vendor
+npm start        # uruchamia aplikację
+npm test         # testy logiki (wycena, kolory, płyty); MV_REAL_DIR=… dodaje testy na prawdziwych plikach
+npm run dist     # buduje instalator i ZIP lokalnie (Windows)
 ```
+
+### Wydanie nowej wersji
+1. Zmień `version` w `package.json` (np. `1.3.1`) i zrób commit.
+2. `git tag v1.3.1 && git push origin main v1.3.1`
+3. GitHub Actions uruchomi testy, zbuduje instalator i ZIP na Windows i opublikuje Release.
+   Zainstalowane aplikacje same zaproponują aktualizację.

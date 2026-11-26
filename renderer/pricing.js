@@ -36,7 +36,7 @@ export function priceItems(items, p, includeOrderTime = true) {
   for (const it of items) {
     const q = Math.max(0, Number(it.qty) || 0);
     const min = (Number(it.minutes) || 0) * q;
-    minutes += min; prints += q;
+    minutes += min; prints += q * Math.max(1, Number(it.plates) || 1);
     const parts = it.parts && it.parts.length ? it.parts : [{ grams: it.grams, filament: it.filament }];
     for (const pt of parts) {
       const g = (Number(pt.grams) || 0) * q;

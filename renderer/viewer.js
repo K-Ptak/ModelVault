@@ -6,6 +6,7 @@ import { ThreeMFLoader } from 'three/addons/loaders/3MFLoader.js';
 import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { unzipSync } from 'three/addons/libs/fflate.module.js';
 import { parse3MFColors, parseGcodePaths, gcodeColorInfo, PALETTE } from './mc.js';
+import { detectPlates } from './plates.js';
 
 let MODEL_COLOR = 0xf2a03d;
 export function setModelColor(hex) { MODEL_COLOR = new THREE.Color(hex).getHex(); }
@@ -63,7 +64,7 @@ export function parseModel(ext, buffer) {
     case 'stl': {
       const geo = new STLLoader().parse(buffer);
       geo.computeVertexNormals(); // wiele plików STL ma zerowe/błędne normalne
-      return { object: meshFromGeometry(geo), zUp: true, slots: [{ key: 's0', name: '', hex: null }] };
+      return withPlates({ object: meshFromGeometry(geo), zUp: true, slots: [{ key: 's0', name: '', hex: null }] });
     }
     case 'ply': {
       const geo = new PLYLoader().parse(buffer);
@@ -75,15 +76,14 @@ export function parseModel(ext, buffer) {
       const text = new TextDecoder().decode(buffer);
       const obj = new OBJLoader().parse(text);
       const r = splitObjMaterials(obj);
-      return { object: r.object, zUp: false, slots: r.slots.length ? r.slots : [{ key: 's0', name: '', hex: null }] };
+      return withPlates({ object: r.object, zUp: false, slots: r.slots.length ? r.slots : [{ key: 's0', name: '', hex: null }] });
     }
     case '3mf': {
       const mc = parse3MFColors(buffer);
       if (mc) {
         const g = new THREE.Group();
-        mc.slots.forEach((s, i) => { if (s.positions.length) g.add(meshPerSlot(i, s.positions)); });
-        const slots = mc.slots.map(({ positions, ...rest }) => rest);
-        return { object: g, zUp: true, slots, info: { slice: mc.slice } };
+        for (const ch of mc.chunks) { if (!ch.positions.length) continue; const m = meshPerSlot(ch.slot, ch.positions); m.userData.plate = ch.plate; g.add(m); }
+        return withPlates({ object: g, zUp: true, slots: mc.slots, info: { slice: mc.slice }, platesFromFile: mc.plateCount > 1 ? mc.plateIds : null });
       }
       const obj = new ThreeMFLoader().parse(buffer);
       let meshes = 0;
@@ -119,6 +119,61 @@ export function parseModel(ext, buffer) {
     default:
       throw new Error('Brak podglądu dla tego formatu');
   }
+}
+
+/** Wykrywa płyty (lub bierze je z pliku), dzieli meshe per płyta i liczy wymiary każdej płyty. */
+function withPlates(parsed) {
+  const meshes = [];
+  parsed.object.traverse((o) => { if (o.isMesh) meshes.push(o); });
+  if (!parsed.platesFromFile) {
+    meshes.forEach((m) => { if (m.geometry.index) { const g = m.geometry.toNonIndexed(); m.geometry.dispose(); m.geometry = g; } });
+    const det = detectPlates(meshes.map((m) => ({ positions: m.geometry.attributes.position.array, up: parsed.zUp ? 'z' : 'y' })));
+    if (det.count > 1) {
+      const group = new THREE.Group();
+      meshes.forEach((m, mi) => {
+        const pos = m.geometry.attributes.position.array, tp = det.triPlate[mi];
+        const buckets = new Map();
+        for (let t = 0; t < tp.length; t++) { const k = tp[t]; if (!buckets.has(k)) buckets.set(k, []); buckets.get(k).push(t); }
+        for (const [pl, tris] of buckets) {
+          const arr = new Float32Array(tris.length * 9);
+          tris.forEach((t, j) => arr.set(pos.subarray(t * 9, t * 9 + 9), j * 9));
+          const nm = meshPerSlot(m.userData.slot ?? 0, arr);
+          nm.material.dispose(); nm.material = m.material.clone(); nm.material.side = THREE.DoubleSide;
+          nm.userData.plate = pl;
+          group.add(nm);
+        }
+        m.geometry.dispose();
+      });
+      parsed.object = group;
+    } else meshes.forEach((m) => { m.userData.plate = 0; });
+  }
+  // wymiary i objętość per płyta
+  const info = new Map();
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  parsed.object.updateMatrixWorld(true);
+  parsed.object.traverse((m) => {
+    if (!m.isMesh) return;
+    const pl = m.userData.plate || 0;
+    const it = info.get(pl) || { min: new THREE.Vector3(Infinity, Infinity, Infinity), max: new THREE.Vector3(-Infinity, -Infinity, -Infinity), vol: 0, tris: 0 };
+    const pos = m.geometry.attributes.position, idx = m.geometry.index;
+    const n = idx ? idx.count / 3 : pos.count / 3;
+    for (let i = 0; i < n; i++) {
+      a.fromBufferAttribute(pos, idx ? idx.getX(i * 3) : i * 3); b.fromBufferAttribute(pos, idx ? idx.getX(i * 3 + 1) : i * 3 + 1); c.fromBufferAttribute(pos, idx ? idx.getX(i * 3 + 2) : i * 3 + 2);
+      it.min.min(a).min(b).min(c); it.max.max(a).max(b).max(c);
+      it.vol += a.dot(b.clone().cross(c)) / 6;
+    }
+    it.tris += n;
+    info.set(pl, it);
+  });
+  const keys = [...info.keys()].sort((x, y) => x - y);
+  const sliceP = parsed.info && parsed.info.slice && parsed.info.slice.plates ? parsed.info.slice.plates : [];
+  parsed.plates = keys.map((k, i) => {
+    const it = info.get(k), sz = it.max.clone().sub(it.min);
+    const id = parsed.platesFromFile ? parsed.platesFromFile[k] : k + 1;
+    const sp = sliceP.find((x) => x.index === id);
+    return { index: k, id, x: sz.x, y: parsed.zUp ? sz.y : sz.z, z: parsed.zUp ? sz.z : sz.y, volume: Math.abs(it.vol) / 1000, tris: it.tris, minutes: sp ? sp.minutes : null, grams: sp ? sp.grams : null };
+  });
+  return parsed;
 }
 
 /** Kolory slotów: tablica hex wg indeksu slotu */
@@ -185,7 +240,7 @@ function boxOf(object) {
   object.updateMatrixWorld(true);
   const box = new THREE.Box3();
   let any = false;
-  object.traverse((c) => { if ((c.isMesh || c.isLine || c.isLineSegments) && !c.userData.travel) { box.expandByObject(c); any = true; } });
+  object.traverse((c) => { if ((c.isMesh || c.isLine || c.isLineSegments) && !c.userData.travel && c.visible && !c.userData.hiddenPlate) { box.expandByObject(c); any = true; } });
   return any ? box : new THREE.Box3().setFromObject(object);
 }
 
@@ -233,12 +288,15 @@ function addLights(scene) {
   const d2 = new THREE.DirectionalLight(0xbcd2ff, 0.8); d2.position.set(-1.5, 0.5, -1); scene.add(d2);
 }
 
-function fitCamera(camera, holder, controls) {
+export const VIEW_PRESETS = { iso: [1, 0.8, 1.2], front: [0, 0.25, 1], side: [1, 0.25, 0], top: [0.001, 1, 0.02], back: [-0.6, 0.6, -1] };
+function fitCamera(camera, holder, controls, spec = null) {
   const box = boxOf(holder);
   const sphere = box.getBoundingSphere(new THREE.Sphere());
   const r = Math.max(sphere.radius, 0.001);
-  const dist = r / Math.sin((camera.fov * Math.PI) / 180 / 2) * 1.05;
-  const dir = new THREE.Vector3(1, 0.8, 1.2).normalize();
+  let dist = r / Math.sin((camera.fov * Math.PI) / 180 / 2) * 1.05;
+  const dir = new THREE.Vector3(...(spec && spec.dir ? spec.dir : VIEW_PRESETS.iso)).normalize();
+  if (spec && spec.dist) dist = spec.dist * r;
+  if (spec && spec.tx != null) sphere.center.add(new THREE.Vector3(spec.tx * r, spec.ty * r, spec.tz * r));
   camera.position.copy(sphere.center).addScaledVector(dir, dist);
   camera.near = dist / 100; camera.far = dist * 100;
   camera.updateProjectionMatrix();
@@ -249,7 +307,7 @@ function fitCamera(camera, holder, controls) {
 
 // ---------- miniatury (jeden współdzielony renderer) ----------
 let thumbR = null;
-export function renderThumbnail(parsed, size = 320, colors = null) {
+export function renderThumbnail(parsed, size = 320, colors = null, viewSpec = null) {
   if (!thumbR) {
     const canvas = document.createElement('canvas');
     thumbR = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
@@ -262,7 +320,7 @@ export function renderThumbnail(parsed, size = 320, colors = null) {
   const holder = orient(parsed.object, parsed.zUp);
   scene.add(holder);
   const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 1000);
-  fitCamera(cam, holder);
+  fitCamera(cam, holder, null, viewSpec);
   thumbR.setClearColor(0x000000, 0);
   thumbR.render(scene, cam);
   const url = thumbR.domElement.toDataURL('image/png');
@@ -331,6 +389,22 @@ export class Viewer {
     });
   }
   resetView() { if (this.holder) fitCamera(this.camera, this.holder, this.controls); }
+  showPlate(k) {
+    if (!this.holder) return;
+    this.holder.traverse((o) => { if (o.isMesh) { const hide = k != null && (o.userData.plate || 0) !== k; o.visible = !hide; o.userData.hiddenPlate = hide; } });
+    const box = boxOf(this.holder);
+    if (this.grid) { const c = box.getCenter(new THREE.Vector3()); this.grid.position.x = c.x; this.grid.position.z = c.z; }
+    fitCamera(this.camera, this.holder, this.controls);
+  }
+  /** Kierunek kamery względem środka i odległość w promieniach – do zapamiętania widoku miniatury */
+  getViewSpec() {
+    if (!this.holder) return null;
+    const sphere = boxOf(this.holder).getBoundingSphere(new THREE.Sphere());
+    const d = this.camera.position.clone().sub(this.controls.target);
+    const len = d.length();
+    d.normalize();
+    return { dir: [d.x, d.y, d.z], dist: len / Math.max(sphere.radius, 0.001), tx: (this.controls.target.x - sphere.center.x) / sphere.radius, ty: (this.controls.target.y - sphere.center.y) / sphere.radius, tz: (this.controls.target.z - sphere.center.z) / sphere.radius };
+  }
   setWireframe(on) {
     this.wire = on;
     this.holder?.traverse((o) => { if (o.isMesh) o.material.wireframe = on; });
