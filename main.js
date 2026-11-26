@@ -772,6 +772,9 @@ function createWindow() {
   }
 }
 
+// osobny profil (do zrzutów ekranu / testów)
+if (process.env.MV_USERDATA) app.setPath('userData', process.env.MV_USERDATA);
+
 // programowy WebGL, gdy GPU jest niedostępne (VM, stare sterowniki)
 app.commandLine.appendSwitch('enable-unsafe-swiftshader');
 app.commandLine.appendSwitch('lang', 'pl');
