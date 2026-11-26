@@ -45,15 +45,27 @@ const DEFAULT_SETTINGS = {
     estFill: 0.35,          // szacunek z objętości: jaka część bryły to plastik
     estGramsPerHour: 12,    // szacunek czasu: wydajność drukarki (g/h)
     defaultFilament: 'f6',
+    // wielokolorowe (szacunki, gdy brak danych ze slicera)
+    layerHeight: 0.2,       // mm – do liczenia zmian koloru z wysokości
+    purgePerChange: 0.6,    // g filamentu wyrzucanego przy jednej zmianie koloru (purge + wieża)
+    changeTimeSec: 45,      // s na jedną zmianę koloru
+    paintWall: 0.8,         // mm – grubość „skóry” malowanego koloru
   },
+  stock: {
+    lowThreshold: 150,          // g – ostrzeżenie o kończącej się szpuli
+    onModelPrinted: true,       // odejmuj filament po oznaczeniu modelu jako „wydrukowane”
+    onOrderStatus: 'printing',  // 'printing' | 'done' | 'off' – kiedy odejmować dla zamówień
+  },
+  orders: [],
+  stockLog: [],
   filaments: [
-    { id: 'f1', name: 'PlastSpaw PLA+', color: 'beżowy', hex: '#d8c4a2', type: 'PLA', pricePerKg: 45, density: 1.24 },
-    { id: 'f2', name: 'PlastSpaw PLA+', color: 'zielony', hex: '#3f9c4f', type: 'PLA', pricePerKg: 45, density: 1.24 },
-    { id: 'f3', name: 'SUNLU PLA+', color: 'srebrny', hex: '#b7bcc3', type: 'PLA', pricePerKg: 69.99, density: 1.24 },
-    { id: 'f4', name: 'eSun PLA', color: 'niebieski/czerwony', hex: '#7b5fd6', type: 'PLA', pricePerKg: 47.52, density: 1.24 },
-    { id: 'f5', name: 'SUNLU PETG', color: 'czarny', hex: '#2b2d31', type: 'PETG', pricePerKg: 42.99, density: 1.27 },
-    { id: 'f6', name: 'SUNLU PLA+', color: 'złoty', hex: '#d4a446', type: 'PLA', pricePerKg: 69.99, density: 1.24 },
-    { id: 'f7', name: 'TECBEARS PETG', color: 'biały', hex: '#f1f1ee', type: 'PETG', pricePerKg: 39.99, density: 1.27 },
+    { id: 'f1', name: 'PlastSpaw PLA+', color: 'beżowy', hex: '#d8c4a2', type: 'PLA', pricePerKg: 45, density: 1.24, spoolWeight: 1000, remaining: null },
+    { id: 'f2', name: 'PlastSpaw PLA+', color: 'zielony', hex: '#3f9c4f', type: 'PLA', pricePerKg: 45, density: 1.24, spoolWeight: 1000, remaining: null },
+    { id: 'f3', name: 'SUNLU PLA+', color: 'srebrny', hex: '#b7bcc3', type: 'PLA', pricePerKg: 69.99, density: 1.24, spoolWeight: 1000, remaining: null },
+    { id: 'f4', name: 'eSun PLA', color: 'niebieski/czerwony', hex: '#7b5fd6', type: 'PLA', pricePerKg: 47.52, density: 1.24, spoolWeight: 1000, remaining: null },
+    { id: 'f5', name: 'SUNLU PETG', color: 'czarny', hex: '#2b2d31', type: 'PETG', pricePerKg: 42.99, density: 1.27, spoolWeight: 1000, remaining: null },
+    { id: 'f6', name: 'SUNLU PLA+', color: 'złoty', hex: '#d4a446', type: 'PLA', pricePerKg: 69.99, density: 1.24, spoolWeight: 1000, remaining: null },
+    { id: 'f7', name: 'TECBEARS PETG', color: 'biały', hex: '#f1f1ee', type: 'PETG', pricePerKg: 39.99, density: 1.27, spoolWeight: 1000, remaining: null },
   ],
   order: { name: '', items: [] },
 };
@@ -66,6 +78,9 @@ function loadSettings() {
     ...d, ...s,
     appearance: { ...d.appearance, ...(s.appearance || {}) },
     pricing: { ...d.pricing, ...(s.pricing || {}) },
+    stock: { ...d.stock, ...(s.stock || {}) },
+    orders: Array.isArray(s.orders) ? s.orders : [],
+    stockLog: Array.isArray(s.stockLog) ? s.stockLog : [],
     filaments: Array.isArray(s.filaments) ? s.filaments : d.filaments,
     order: s.order && Array.isArray(s.order.items) ? s.order : d.order,
   } : d;
@@ -336,7 +351,10 @@ handle('meta:set', async (rel, patch) => {
   const next = { ...cur, ...patch };
   try { next.size = (await fsp.stat(toAbs(rel))).size; } catch {}
   if (next.print) { for (const k of Object.keys(next.print)) if (next.print[k] == null || next.print[k] === '') delete next.print[k]; if (!Object.keys(next.print).length) delete next.print; }
-  const empty = !(next.tags && next.tags.length) && !next.notes && !next.status && !next.favorite && !next.print;
+  if (next.print && Array.isArray(next.print.slots)) { next.print.slots = next.print.slots.map((x) => x || null); if (!next.print.slots.some((x) => x && (x.filamentId || x.grams != null))) delete next.print.slots; }
+  if (next.print && !Object.keys(next.print).length) delete next.print;
+  if (next.source === '') delete next.source;
+  const empty = !(next.tags && next.tags.length) && !next.notes && !next.status && !next.favorite && !next.print && !next.source;
   if (empty) delete meta.files[rel]; else meta.files[rel] = next;
   saveMetaSoon();
   return meta.files[rel] || null;
@@ -359,6 +377,23 @@ handle('thumb:put', async (rel, mtime, size, v, dataUrl) => {
 handle('thumb:clear', async () => { await fsp.rm(thumbDir(), { recursive: true, force: true }); return true; });
 
 handle('settings:get', async () => settings);
+handle('files:hash', async (rels) => {
+  const out = {};
+  for (const rel of rels) {
+    try {
+      out[rel] = await new Promise((res, rej) => {
+        const h = crypto.createHash('sha1');
+        fs.createReadStream(toAbs(rel)).on('data', (d) => h.update(d)).on('end', () => res(h.digest('hex'))).on('error', rej);
+      });
+    } catch { out[rel] = null; }
+  }
+  return out;
+});
+handle('shell:external', async (url) => {
+  if (!/^https?:\/\//i.test(String(url))) throw new Error('Obsługiwane są tylko linki http(s)');
+  await shell.openExternal(String(url));
+  return true;
+});
 handle('settings:set', async (next) => { settings = next; saveSettings(); return true; });
 handle('settings:defaults', async () => JSON.parse(JSON.stringify(DEFAULT_SETTINGS)));
 handle('clipboard:write', async (text) => { clipboard.writeText(String(text)); return true; });

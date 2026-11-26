@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('api', {
   getSettings: () => call('settings:get'),
   setSettings: (s) => call('settings:set', s),
   defaultSettings: () => call('settings:defaults'),
+  hashFiles: (rels) => call('files:hash', rels),
+  openExternal: (url) => call('shell:external', url),
   copyText: (t) => call('clipboard:write', t),
   saveFile: (name, content) => call('file:save', name, content),
   pathForFile: (file) => webUtils.getPathForFile(file),

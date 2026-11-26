@@ -1,4 +1,5 @@
-import { Viewer, parseModel, renderThumbnail, computeStats, extract3mfThumbnail, setModelColor } from './viewer.js';
+import { Viewer, parseModel, renderThumbnail, computeStats, extract3mfThumbnail, setModelColor, slotGeomStats, PALETTE } from './viewer.js';
+import { gcodeColorInfo, hexDist } from './mc.js';
 import { priceItems, slicerInfoFromGcode, slicerInfoFrom3mf, fmtMoney, fmtNum, fmtDuration, parseDuration } from './pricing.js';
 
 const api = window.api;
@@ -39,7 +40,7 @@ const cur = () => P().currency || 'zł';
 const filamentById = (id) => S.filaments.find((x) => x.id === id) || null;
 const defaultFilament = () => filamentById(P().defaultFilament) || S.filaments[0] || null;
 const filLabel = (fl) => fl ? `${fl.name} – ${fl.color}` : 'brak filamentu';
-const thumbVer = () => S.appearance.modelColor;
+const thumbVer = () => S.appearance.modelColor + '|mc2';
 const swatch = (fl) => `<span class="sw" style="background:${fl ? esc(fl.hex || '#888') : 'transparent'}"></span>`;
 
 // ---------- utils ----------
@@ -54,12 +55,20 @@ function tagColor(t) {
 }
 const metaOf = (rel) => (lib && lib.meta[rel]) || {};
 
-function toast(msg, err = false) {
+function toast(msg, err = false, action = null) {
   const el = document.createElement('div');
   el.className = 'toast' + (err ? ' err' : '');
-  el.textContent = msg;
+  const span = document.createElement('span');
+  span.textContent = msg;
+  el.appendChild(span);
+  if (action) {
+    const b = document.createElement('button');
+    b.className = 'toast-btn'; b.textContent = action.label;
+    b.onclick = () => { el.remove(); action.fn(); };
+    el.appendChild(b);
+  }
   $('#toasts').appendChild(el);
-  setTimeout(() => el.remove(), err ? 5000 : 2600);
+  setTimeout(() => el.remove(), err ? 5000 : action ? 7000 : 2600);
 }
 async function safe(fn, okMsg) {
   try { const r = await fn(); if (okMsg) toast(okMsg); return r; }
@@ -162,6 +171,8 @@ function computeVisible() {
       if (st.recursive ? !(f.dir === st.folder || (st.folder === '' ) || f.dir.startsWith(st.folder + '/')) : f.dir !== st.folder) return false;
     }
     if (st.special === 'order' && !order().items.some((i) => i.rel === f.rel)) return false;
+    if (st.special === 'dups' && !dupState.byRel.has(f.rel)) return false;
+    if (st.special === 'orders' || st.special === 'stock') return false;
     if (st.special === 'fav' && !m.favorite) return false;
     if (st.special === 'todo' && m.status !== 'todo') return false;
     if (st.special === 'printed' && m.status !== 'printed') return false;
@@ -171,7 +182,7 @@ function computeVisible() {
       if (st.format === 'other' ? !OTHER_EXT.has(f.ext) : f.ext !== st.format) return false;
     }
     if (q) {
-      const hay = `${f.rel} ${(m.tags || []).join(' ')} ${m.notes || ''}`.toLowerCase();
+      const hay = `${f.rel} ${(m.tags || []).join(' ')} ${m.notes || ''} ${m.source || ''}`.toLowerCase();
       if (!q.split(/\s+/).every((w) => hay.includes(w))) return false;
     }
     return true;
@@ -182,6 +193,7 @@ function computeVisible() {
     size: (a, b) => b.size - a.size,
     ext: (a, b) => a.ext.localeCompare(b.ext) || a.name.localeCompare(b.name, 'pl', { numeric: true }),
   }[st.sort];
+  if (st.special === 'dups') return list.sort((a, b) => dupState.byRel.get(a.rel) - dupState.byRel.get(b.rel) || a.rel.localeCompare(b.rel));
   return list.sort(cmp);
 }
 
@@ -207,11 +219,14 @@ function renderSidebar() {
     if (!m.tags || !m.tags.length) cnt.untagged++;
     for (const t of m.tags || []) tagCount.set(t, (tagCount.get(t) || 0) + 1);
   }
-  const items = [['all', '◫', 'Wszystkie modele'], ['fav', '★', 'Ulubione'], ['todo', '◷', 'Do wydruku'], ['printed', '✓', 'Wydrukowane'], ['untagged', '◌', 'Bez tagów']];
+  const items = [['all', '◫', 'Wszystkie modele'], ['fav', '★', 'Ulubione'], ['todo', '◷', 'Do wydruku'], ['printed', '✓', 'Wydrukowane'], ['untagged', '◌', 'Bez tagów'], ['dups', '⧉', 'Duplikaty']];
+  cnt.dups = dupState.groups ? dupState.groups.reduce((a, g) => a + g.length, 0) : '';
   sp.innerHTML = items.map(([k, ico, label]) => `<div class="nav-item ${st.special === k ? 'active' : ''}" data-sp="${k}"><span class="ico">${ico}</span>${label}<span class="count">${cnt[k]}</span></div>`).join('');
   sp.querySelectorAll('[data-sp]').forEach((el) => el.onclick = () => setView({ special: el.dataset.sp }));
   $('#orderNav').classList.toggle('active', st.special === 'order');
-  updateOrderCount();
+  $('#ordersNav').classList.toggle('active', st.special === 'orders');
+  $('#stockNav').classList.toggle('active', st.special === 'stock');
+  updateOrderCount(); updateOrdersCount(); updateStockCount();
 
   // drzewo
   const counts = new Map();
@@ -391,10 +406,19 @@ const io = new IntersectionObserver((entries) => {
 
 function renderGrid() {
   const grid = $('#grid'), empty = $('#empty');
-  const isOrder = st.special === 'order' && !!lib;
-  $('#order').hidden = !isOrder;
-  grid.hidden = isOrder;
-  if (isOrder) { io.disconnect(); empty.hidden = true; visible = computeVisible(); renderCrumbs(); renderOrder(); return; }
+  const view = lib && ['order', 'orders', 'stock'].includes(st.special) ? st.special : null;
+  for (const v of ['order', 'orders', 'stock']) $('#' + v).hidden = view !== v;
+  grid.hidden = !!view;
+  $('#crumbs').hidden = view === 'orders' || view === 'stock';
+  if (view) {
+    io.disconnect(); empty.hidden = true; visible = computeVisible(); renderCrumbs();
+    ({ order: renderOrder, orders: renderOrders, stock: renderStock })[view]();
+    return;
+  }
+  if (st.special === 'dups' && lib) {
+    computeDups();
+    if (dupState.computing || !dupState.groups) { grid.innerHTML = ''; renderCrumbs(); empty.hidden = false; empty.innerHTML = '<div><span class="spin" style="display:inline-block;width:22px;height:22px;border:2px solid var(--line-2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite"></span><br><br>Porównuję zawartość plików…</div>'; return; }
+  }
   io.disconnect();
   visible = computeVisible();
   renderCrumbs();
@@ -406,12 +430,15 @@ function renderGrid() {
     return;
   }
   empty.hidden = visible.length > 0;
-  if (!visible.length) empty.innerHTML = `<div><div class="big">Pusto</div>${st.search || st.tag || st.format !== 'all' ? 'Nic nie pasuje do filtrów.' : 'Przeciągnij tu pliki STL / 3MF / OBJ / G-code, aby je dodać.'}</div>`;
+  if (!visible.length) empty.innerHTML = st.special === 'dups' ? '<div><div class="big">Brak duplikatów</div>Nie znalazłem plików o identycznej zawartości.</div>' : `<div><div class="big">Pusto</div>${st.search || st.tag || st.format !== 'all' ? 'Nic nie pasuje do filtrów.' : 'Przeciągnij tu pliki STL / 3MF / OBJ / G-code, aby je dodać.'}</div>`;
   grid.innerHTML = visible.map((f) => {
     const m = lib.meta[f.rel] || {};
     const t = thumbs.get(f.rel);
     const img = t && t !== 'none' ? `<img src="${t}" class="${f.image ? 'photo' : ''}" draggable="false">` : t === 'none' ? `<span class="ph">${esc(f.ext)}</span>` : '<span class="spin"></span>';
-    const flags = `${m.favorite ? '<span class="flag fav">★</span>' : ''}${m.status === 'todo' ? '<span class="flag todo">◷</span>' : ''}${m.status === 'printed' ? '<span class="flag printed">✓</span>' : ''}`;
+    const dg = st.special === 'dups' ? dupState.byRel.get(f.rel) : undefined;
+    const col = ls.get(colorsKey(f), null);
+    const nCol = col && col.slots ? col.slots.length : 1;
+    const flags = `${dg !== undefined ? `<span class="flag dup">#${dg + 1}</span>` : ''}${nCol > 1 ? `<span class="flag mc" title="${nCol} kolory">${(col.slots.slice(0, 4).map((x, i) => `<i style="background:${esc(x.hex || PALETTE[i % PALETTE.length])}"></i>`).join(''))}</span>` : ''}${m.source ? '<span class="flag src" title="Ma link do źródła">↗</span>' : ''}${m.favorite ? '<span class="flag fav">★</span>' : ''}${m.status === 'todo' ? '<span class="flag todo">◷</span>' : ''}${m.status === 'printed' ? '<span class="flag printed">✓</span>' : ''}`;
     const dots = (m.tags || []).slice(0, 5).map((tg) => `<i style="background:${tagColor(tg)}" title="${esc(tg)}"></i>`).join('');
     return `<div class="card ${sel.has(f.rel) ? 'sel' : ''}" data-rel="${esc(f.rel)}" draggable="true" title="${esc(f.rel)}">
       <div class="thumb">${img}<div class="badges"><span class="ext ${esc(f.ext)}">${esc(f.ext)}</span><span class="flags">${flags}</span></div></div>
@@ -431,10 +458,14 @@ function renderCrumbs() {
     parts.forEach((p, i) => { const rel = parts.slice(0, i + 1).join('/'); h += `<span class="sep">/</span><span class="c ${i === parts.length - 1 ? 'cur' : ''}" data-c="${esc(rel)}">${esc(p)}</span>`; });
     h += `<label><input type="checkbox" id="recur" ${st.recursive ? 'checked' : ''}>z podfolderami</label>`;
   } else {
-    const names = { all: 'Wszystkie modele', fav: 'Ulubione', todo: 'Do wydruku', printed: 'Wydrukowane', untagged: 'Bez tagów', order: 'Wycena zamówienia' };
+    const names = { all: 'Wszystkie modele', fav: 'Ulubione', todo: 'Do wydruku', printed: 'Wydrukowane', untagged: 'Bez tagów', order: 'Wycena zamówienia', dups: 'Duplikaty', orders: 'Zamówienia', stock: 'Magazyn' };
     h += `<span class="c cur">${names[st.special]}</span>`;
   }
   if (st.tag) h += `<span class="sep">·</span><span class="tag active" id="clearTag"><span class="dot" style="background:${tagColor(st.tag)}"></span>${esc(st.tag)} <span class="x">✕</span></span>`;
+  if (st.special === 'dups' && dupState.groups) {
+    const waste = dupState.groups.reduce((a, g) => a + g[0].size * (g.length - 1), 0);
+    h += `<span class="sep">·</span><span class="muted-note" style="padding:0">${dupState.groups.length} grup identycznych plików · do odzyskania ${fmtSize(waste)}</span>`;
+  }
   h += `<span class="info">${visible.length} ${visible.length === 1 ? 'model' : 'modeli'}${sel.size > 1 ? ` · zaznaczono ${sel.size}` : ''}</span>`;
   el.innerHTML = h;
   el.querySelectorAll('[data-c]').forEach((c) => {
@@ -481,8 +512,8 @@ grid.addEventListener('contextmenu', (e) => {
   items.push('-');
   const allFav = rels.every((r) => metaOf(r).favorite);
   items.push({ label: allFav ? 'Usuń z ulubionych' : 'Dodaj do ulubionych', hint: 'F', action: () => setMetaMany(rels, () => ({ favorite: !allFav })) });
-  items.push({ label: 'Oznacz: do wydruku', action: () => setMetaMany(rels, () => ({ status: 'todo' })) });
-  items.push({ label: 'Oznacz: wydrukowane', action: () => setMetaMany(rels, () => ({ status: 'printed' })) });
+  items.push({ label: 'Oznacz: do wydruku', action: () => setStatus(rels, 'todo') });
+  items.push({ label: 'Oznacz: wydrukowane', action: () => setStatus(rels, 'printed') });
   items.push({ label: 'Dodaj tag…', action: () => bulkTag(rels) });
   items.push({ label: 'Dodaj do wyceny', action: () => addToOrder(rels) });
   if (one) items.push({ label: 'Odśwież miniaturę', action: () => { thumbs.delete(rel); requestThumb(rel, true, true); } });
@@ -512,7 +543,15 @@ async function bulkTag(rels) {
 // ---------- miniatury ----------
 const queue = [];
 let busy = false;
+function refreshCardFlags(rel) {
+  const card = document.querySelector(`#grid .card[data-rel="${CSS.escape(rel)}"] .flags`);
+  const f = lib && lib.files.find((x) => x.rel === rel);
+  if (!card || !f || card.querySelector('.mc')) return;
+  const col = ls.get(colorsKey(f), null);
+  if (col && col.slots && col.slots.length > 1) card.insertAdjacentHTML('afterbegin', `<span class="flag mc" title="${col.slots.length} kolory">${col.slots.slice(0, 4).map((x, i) => `<i style="background:${esc(x.hex || PALETTE[i % PALETTE.length])}"></i>`).join('')}</span>`);
+}
 function setCardThumb(rel) {
+  refreshCardFlags(rel);
   const ot = document.querySelector(`#order tr[data-rel="${CSS.escape(rel)}"] .o-thumb`);
   const tv = thumbs.get(rel);
   if (ot && tv && tv !== 'none') ot.innerHTML = `<img src="${tv}">`;
@@ -561,7 +600,9 @@ async function pump() {
       if (f.ext === 'gcode') url = gcodeThumb(buf);
       if (!url) {
         await new Promise((r) => setTimeout(r, 0));
-        url = renderThumbnail(parseModel(f.ext, buf));
+        const parsed = parseModel(f.ext, buf);
+        try { storeParsedAnalysis(f, parsed); } catch (e) { console.warn(e); }
+        url = renderThumbnail(parsed, 320, slotColors(f, true));
       }
       if (url) api.putThumb(f.rel, f.mtime, f.size, thumbVer(), url).catch(() => {});
     } catch (e) { console.warn('thumb', rel, e); }
@@ -571,56 +612,174 @@ async function pump() {
   busy = false;
 }
 
-// ---------- dane do wyceny (gramy / czas / filament) ----------
-function statsKey(f) { return `mv.stats:${f.rel}:${f.mtime}:${f.size}`; }
-const slicerKey = (f) => `mv.slicer:${f.rel}:${f.mtime}:${f.size}`;
+// ---------- dane do wyceny (gramy / czas / filament / kolory) ----------
+function statsKey(f) { return `mv.stats2:${f.rel}:${f.mtime}:${f.size}`; }
+const slicerKey = (f) => `mv.slicer2:${f.rel}:${f.mtime}:${f.size}`;
+const colorsKey = (f) => `mv.colors2:${f.rel}:${f.mtime}:${f.size}`;
 
-/** Zwraca { grams, minutes, filament, gramsSrc, minutesSrc, filamentSet } */
-function printData(f) {
-  const m = metaOf(f.rel).print || {};
-  const filament = filamentById(m.filamentId) || defaultFilament();
-  const density = filament ? Number(filament.density) || 1.24 : 1.24;
-  const sl = ls.get(slicerKey(f), null);
-  const stats = ls.get(statsKey(f), null);
-  let grams = null, gramsSrc = null, minutes = null, minutesSrc = null;
-  if (m.grams != null) { grams = m.grams; gramsSrc = 'ręcznie'; }
-  else if (sl && sl.grams != null) { grams = sl.grams; gramsSrc = sl.source; }
-  else if (sl && sl.lengthMm != null) { grams = sl.lengthMm * Math.PI * 0.875 * 0.875 / 1000 * density; gramsSrc = sl.source; }
-  else if (stats && stats.volume) { grams = stats.volume * density * P().estFill; gramsSrc = 'szacunek'; }
-  if (m.minutes != null) { minutes = m.minutes; minutesSrc = 'ręcznie'; }
-  else if (sl && sl.minutes != null) { minutes = sl.minutes; minutesSrc = sl.source; }
-  else if (grams != null && P().estGramsPerHour > 0) { minutes = grams / P().estGramsPerHour * 60; minutesSrc = 'szacunek'; }
-  return { grams, minutes, filament, gramsSrc, minutesSrc, filamentSet: !!filamentById(m.filamentId) };
+function nearestFilament(hex) {
+  if (!hex) return null;
+  let best = null, bd = Infinity;
+  for (const fl of S.filaments) { if (!fl.hex) continue; const d = hexDist(hex, fl.hex); if (d < bd) { bd = d; best = fl; } }
+  return bd < 180 ? best : null;
+}
+/** Kolory slotów do podglądu/miniatur */
+function slotColors(f, forThumb = false) {
+  const c = ls.get(colorsKey(f), null);
+  const slots = c && c.slots && c.slots.length ? c.slots : [{}];
+  const multi = slots.length > 1;
+  const d = forThumb ? null : printData(f);
+  return slots.map((sl, i) => {
+    if (!forThumb && S.appearance.useFilamentColor && d.parts[i] && (d.parts[i].filamentSet || (multi && d.parts[i].auto)) && d.parts[i].filament?.hex) return d.parts[i].filament.hex;
+    if (multi) return sl.hex || PALETTE[i % PALETTE.length];
+    return S.appearance.modelColor;
+  });
 }
 
-// analiza w tle (dane ze slicera + objętość), po jednym pliku naraz
+/** Liczba zmian koloru z zakresów wysokości slotów: w każdej warstwie (k kolorów) – k-1 zmian. */
+function estimateChanges(slots) {
+  const geo = slots.filter((s) => Number.isFinite(s.zMin) && Number.isFinite(s.zMax) && s.zMax > s.zMin);
+  if (geo.length < 2) return { changes: 0, presence: slots.map(() => 0) };
+  const lh = Math.max(0.05, Number(P().layerHeight) || 0.2);
+  const z0 = Math.min(...geo.map((s) => s.zMin)), z1 = Math.max(...geo.map((s) => s.zMax));
+  const layers = Math.min(20000, Math.ceil((z1 - z0) / lh));
+  let changes = 0;
+  const presence = slots.map(() => 0);
+  for (let L = 0; L < layers; L++) {
+    const z = z0 + (L + 0.5) * lh;
+    let k = 0;
+    slots.forEach((s, i) => { if (Number.isFinite(s.zMin) && z >= s.zMin && z <= s.zMax) { k++; presence[i]++; } });
+    if (k > 1) changes += k - 1;
+  }
+  return { changes, presence };
+}
+
+/**
+ * Dane do wyceny pliku. Zwraca:
+ * { parts:[{slot, name, fileHex, filament, filamentSet, auto, grams, gramsSrc}], grams, minutes, gramsSrc, minutesSrc,
+ *   multi, changes, purgeG, changeMin, filament (pierwszy), filamentSet }
+ */
+function printData(f) {
+  const m = metaOf(f.rel).print || {};
+  const col = ls.get(colorsKey(f), null);
+  const slots = col && col.slots && col.slots.length ? col.slots : [{ key: 's0', name: '', hex: null }];
+  const multi = slots.length > 1;
+  const sl = ls.get(slicerKey(f), null);
+  let stats = ls.get(statsKey(f), null); if (stats && stats.failed) stats = null;
+  const p = P();
+
+  // filament per slot
+  const parts = slots.map((s, i) => {
+    const ov = (m.slots && m.slots[i]) || {};
+    const setId = ov.filamentId || (i === 0 ? m.filamentId : null);
+    let filament = filamentById(setId), filamentSet = !!filament, auto = false;
+    if (!filament && multi) { filament = nearestFilament(s.hex); auto = !!filament; }
+    if (!filament) filament = defaultFilament();
+    return { slot: i, name: s.name || (multi ? `Kolor ${i + 1}` : ''), fileHex: s.hex || null, filament, filamentSet, auto, grams: null, gramsSrc: null, manual: ov.grams != null ? ov.grams : null };
+  });
+  const density = parts[0].filament ? Number(parts[0].filament.density) || 1.24 : 1.24;
+
+  // czas / zmiany koloru
+  let changes = 0, changeSrc = null, presence = slots.map(() => 1);
+  if (multi) {
+    if (col && Number.isFinite(col.toolChanges) && col.toolChanges > 0) { changes = col.toolChanges; changeSrc = 'G-code'; }
+    else { const e = estimateChanges(slots); changes = e.changes; presence = e.presence; changeSrc = 'szacunek'; }
+  }
+
+  // gramy per slot
+  const perSlot = col && col.perSlotGrams && col.perSlotGrams.some((x) => x != null) ? col.perSlotGrams : null;
+  let purgeG = 0;
+  if (!multi) {
+    const pt = parts[0];
+    if (m.grams != null) { pt.grams = m.grams; pt.gramsSrc = 'ręcznie'; }
+    else if (sl && sl.grams != null) { pt.grams = sl.grams; pt.gramsSrc = sl.source; }
+    else if (sl && sl.lengthMm != null) { pt.grams = sl.lengthMm * Math.PI * 0.875 * 0.875 / 1000 * density; pt.gramsSrc = sl.source; }
+    else if (stats && stats.volume) { pt.grams = stats.volume * density * p.estFill; pt.gramsSrc = 'szacunek'; }
+  } else {
+    // udziały z geometrii
+    const total = (sl && sl.grams != null) ? sl.grams : (stats && stats.volume ? stats.volume * density * p.estFill : null);
+    const fromSlicerTotal = !!(sl && sl.grams != null);
+    const paintG = slots.map((s, i) => (s.paintArea || 0) / 100 * (p.paintWall / 10) * (Number(parts[i].filament?.density) || density));
+    const volSum = slots.reduce((a, s) => a + (s.vol || 0), 0);
+    const areaSum = slots.reduce((a, s) => a + (s.area || 0), 0);
+    let est = slots.map(() => 0);
+    if (total != null) {
+      const rest = Math.max(0, total - paintG.reduce((a, b) => a + b, 0));
+      est = slots.map((s, i) => paintG[i] + (volSum > 0 ? rest * (s.vol || 0) / volSum : areaSum > 0 ? rest * (s.area || 0) / areaSum : rest / slots.length));
+    }
+    if (!fromSlicerTotal && !perSlot) {
+      purgeG = changes * p.purgePerChange;
+      const pres = presence.reduce((a, b) => a + b, 0) || 1;
+      est = est.map((g, i) => g + purgeG * (presence[i] / pres));
+    }
+    parts.forEach((pt, i) => {
+      if (pt.manual != null) { pt.grams = pt.manual; pt.gramsSrc = 'ręcznie'; }
+      else if (perSlot && perSlot[i] != null) { pt.grams = perSlot[i]; pt.gramsSrc = col.perSlotSource || (sl && sl.source) || 'slicer'; }
+      else if (total != null) { pt.grams = est[i]; pt.gramsSrc = fromSlicerTotal ? `${sl.source} + podział` : 'szacunek'; }
+    });
+  }
+  const has = parts.some((x) => x.grams != null);
+  const grams = has ? parts.reduce((a, x) => a + (x.grams || 0), 0) : null;
+  const srcs = [...new Set(parts.map((x) => x.gramsSrc).filter(Boolean))];
+  const gramsSrc = srcs.length === 1 ? srcs[0] : srcs.length ? 'mieszane' : null;
+
+  let minutes = null, minutesSrc = null;
+  const changeMin = changeSrc === 'szacunek' || (changeSrc === 'G-code' && !(sl && sl.minutes != null)) ? changes * p.changeTimeSec / 60 : 0;
+  if (m.minutes != null) { minutes = m.minutes; minutesSrc = 'ręcznie'; }
+  else if (sl && sl.minutes != null) { minutes = sl.minutes; minutesSrc = sl.source; }
+  else if (grams != null && p.estGramsPerHour > 0) { minutes = (grams - purgeG) / p.estGramsPerHour * 60 + changeMin; minutesSrc = 'szacunek'; }
+
+  return { parts, grams, minutes, gramsSrc, minutesSrc, multi, changes, changeSrc, purgeG, changeMin: minutesSrc === 'szacunek' ? changeMin : 0, filament: parts[0].filament, filamentSet: parts[0].filamentSet };
+}
+
+// analiza w tle (dane ze slicera + objętość + kolory), po jednym pliku naraz
 let analysisChain = Promise.resolve();
 const analyzing = new Set();
 function ensureAnalysis(f) {
   const needSl = (f.ext === 'gcode' || f.ext === '3mf') && ls.get(slicerKey(f), undefined) === undefined;
   const needSt = f.viewable && f.ext !== 'gcode' && !ls.get(statsKey(f), null);
-  if ((!needSl && !needSt) || analyzing.has(f.rel) || f.size > 250 * 1048576) return Promise.resolve(false);
+  const needCol = f.viewable && ls.get(colorsKey(f), undefined) === undefined;
+  if ((!needSl && !needSt && !needCol) || analyzing.has(f.rel) || f.size > 250 * 1048576) return Promise.resolve(false);
   analyzing.add(f.rel);
   const job = analysisChain.then(async () => {
     try {
       const buf = await api.readFile(f.rel);
       if (needSl) ls.set(slicerKey(f), (f.ext === 'gcode' ? slicerInfoFromGcode(buf) : slicerInfoFrom3mf(buf)) || null);
-      if (needSt && !ls.get(statsKey(f), null)) {
+      if (f.ext === 'gcode') {
+        if (needCol) {
+          const ci = f.size < 150 * 1048576 ? gcodeColorInfo(new TextDecoder().decode(buf)) : null;
+          ls.set(colorsKey(f), ci ? { slots: ci.slots, perSlotGrams: ci.perSlotGrams, perSlotSource: 'G-code', toolChanges: ci.toolChanges } : null);
+        }
+      } else if (needSt || needCol) {
         await new Promise((r) => setTimeout(r, 0));
         const parsed = parseModel(f.ext, buf);
-        ls.set(statsKey(f), computeStats(parsed.object, parsed.isGcode));
+        storeParsedAnalysis(f, parsed);
       }
       return true;
     } catch (e) {
       console.warn('analysis', f.rel, e);
       if (needSl && ls.get(slicerKey(f), undefined) === undefined) ls.set(slicerKey(f), null);
-      if (needSt) ls.set(statsKey(f), { failed: true });
+      if (needSt && !ls.get(statsKey(f), null)) ls.set(statsKey(f), { failed: true });
+      if (needCol && ls.get(colorsKey(f), undefined) === undefined) ls.set(colorsKey(f), null);
       return false;
-    }
-    finally { analyzing.delete(f.rel); }
+    } finally { analyzing.delete(f.rel); }
   });
   analysisChain = job.catch(() => {});
   return job;
+}
+function storeParsedAnalysis(f, parsed) {
+  const prev = ls.get(statsKey(f), null);
+  if (!prev || prev.failed) ls.set(statsKey(f), computeStats(parsed.object, parsed.isGcode, parsed.zUp));
+  if (ls.get(colorsKey(f), undefined) === undefined || parsed.isGcode) {
+    const slots = slotGeomStats(parsed).map((x) => ({ key: x.key, ext: x.ext ?? null, name: x.name || '', hex: x.hex || null, area: x.area, vol: x.vol, paintArea: x.paintArea || 0, zMin: x.zMin, zMax: x.zMax }));
+    const info = parsed.info || {};
+    ls.set(colorsKey(f), {
+      slots,
+      perSlotGrams: info.slice ? info.slice.perSlotGrams : info.perSlotGrams || null,
+      perSlotSource: info.slice ? '3MF (slicer)' : info.perSlotGrams ? 'G-code' : null,
+      toolChanges: info.toolChanges ?? null,
+    });
+  }
 }
 
 function filamentOptions(selId, withDefault = true, short = false) {
@@ -672,13 +831,16 @@ function orderLines() {
   return order().items.map((it) => {
     if (it.rel) {
       const f = lib && lib.files.find((x) => x.rel === it.rel);
-      if (!f) return { it, missing: true, name: baseName(it.rel), grams: 0, minutes: 0, qty: 0, filament: null };
+      if (!f) return { it, missing: true, name: baseName(it.rel), grams: 0, minutes: 0, qty: 0, parts: [], filament: null };
       const d = printData(f);
       return { it, f, name: f.name.replace(/\.[^.]+$/, ''), ...d, qty: Number(it.qty) || 0 };
     }
-    return { it, name: it.name || 'Pozycja', grams: it.grams ?? null, minutes: it.minutes ?? null, filament: filamentById(it.filamentId) || defaultFilament(), filamentSet: !!filamentById(it.filamentId), gramsSrc: 'ręcznie', minutesSrc: 'ręcznie', qty: Number(it.qty) || 0 };
+    const fl = filamentById(it.filamentId) || defaultFilament();
+    return { it, name: it.name || 'Pozycja', grams: it.grams ?? null, minutes: it.minutes ?? null, filament: fl, filamentSet: !!filamentById(it.filamentId), gramsSrc: 'ręcznie', minutesSrc: 'ręcznie', qty: Number(it.qty) || 0, parts: [{ slot: 0, filament: fl, grams: it.grams ?? null }], multi: false };
   });
 }
+const lineItem = (l) => ({ parts: l.parts.map((p) => ({ grams: p.grams || 0, filament: p.filament })), minutes: l.minutes || 0, qty: l.qty });
+const lineFilCost = (l) => l.parts.reduce((a, p) => a + (p.filament && p.grams ? p.grams * l.qty / 1000 * p.filament.pricePerKg : 0), 0);
 
 function renderOrder() {
   const el = $('#order');
@@ -689,18 +851,19 @@ function renderOrder() {
     ensureAnalysis(l.f).then((ch) => { if (ch && st.special === 'order') renderOrderSoon(); });
     if (!thumbs.has(l.f.rel)) requestThumb(l.f.rel, false);
   });
-  const r = priceItems(lines.filter((l) => !l.missing).map((l) => ({ grams: l.grams || 0, minutes: l.minutes || 0, qty: l.qty, filament: l.filament })), P());
+  const r = priceItems(lines.filter((l) => !l.missing).map(lineItem), P());
   const c = cur();
-  const srcBadge = (s) => s && s !== 'ręcznie' ? `<span class="src ${s === 'szacunek' ? 'est' : ''}" title="Źródło: ${esc(s)}">${s === 'szacunek' ? '~' : '⚙'}</span>` : '';
+  const srcBadge = (s) => s && s !== 'ręcznie' ? `<span class="src ${s === 'szacunek' || s === 'mieszane' ? 'est' : ''}" title="Źródło: ${esc(s)}">${s === 'szacunek' || s === 'mieszane' ? '~' : '⚙'}</span>` : '';
   const rows = lines.map((l) => {
     const thumb = l.f && thumbs.get(l.f.rel);
-    const lineCost = l.filament && l.grams ? l.grams * l.qty / 1000 * l.filament.pricePerKg : 0;
+    const lineCost = lineFilCost(l);
     return `<tr data-id="${esc(l.it.id)}" data-rel="${esc(l.f ? l.f.rel : '')}" class="${l.missing ? 'missing' : ''} ${l.f && sel.has(l.f.rel) ? 'sel' : ''}">
       <td class="o-thumb">${thumb && thumb !== 'none' ? `<img src="${thumb}">` : `<span>${l.f ? esc(l.f.ext) : l.missing ? '?' : '✎'}</span>`}</td>
       <td class="o-name">${l.it.rel ? `<span class="nm" data-open>${esc(l.name)}</span>${l.missing ? '<small class="warn">brak pliku w bibliotece</small>' : `<small>${esc(l.f.dir || '/')}</small>`}`
         : `<input class="cell" data-k="name" value="${esc(l.name)}" spellcheck="false">`}</td>
-      <td class="o-fil">${swatch(l.filament)}<select class="cell" data-k="filamentId" title="${esc(filLabel(l.filament))}">${filamentOptions(l.filamentSet ? l.filament.id : '', true, true)}</select></td>
-      <td class="o-num"><input class="cell num" data-k="grams" value="${l.gramsSrc === 'ręcznie' && l.grams != null ? fmtNum(l.grams, l.grams % 1 ? 1 : 0) : ''}" placeholder="${l.grams != null ? fmtNum(l.grams, 0) : '—'}">${srcBadge(l.gramsSrc)}</td>
+      <td class="o-fil">${l.multi ? `<span class="mc-chips" data-open title="${esc(l.parts.map((p) => `${p.name}: ${filLabel(p.filament)} (${fmtNum(p.grams || 0, 1)} g)`).join('\n'))}">${l.parts.map((p) => swatch(p.filament)).join('')}<span>${l.parts.length} kolory</span></span>`
+        : `${swatch(l.filament)}<select class="cell" data-k="filamentId" title="${esc(filLabel(l.filament))}">${filamentOptions(l.filamentSet ? l.filament.id : '', true, true)}</select>`}</td>
+      <td class="o-num">${l.multi ? `<span class="ro">${l.grams != null ? fmtNum(l.grams, 0) : '—'}</span>` : `<input class="cell num" data-k="grams" value="${l.gramsSrc === 'ręcznie' && l.grams != null ? fmtNum(l.grams, l.grams % 1 ? 1 : 0) : ''}" placeholder="${l.grams != null ? fmtNum(l.grams, 0) : '—'}">`}${srcBadge(l.gramsSrc)}</td>
       <td class="o-num"><input class="cell num" data-k="minutes" value="${l.minutesSrc === 'ręcznie' && l.minutes != null ? fmtDurShort(l.minutes) : ''}" placeholder="${l.minutes != null ? fmtDurShort(l.minutes) : 'h:mm'}">${srcBadge(l.minutesSrc)}</td>
       <td class="o-qty"><input class="cell num" type="number" min="0" step="1" data-k="qty" value="${l.qty}"></td>
       <td class="o-cost">${fmtMoney(lineCost, c)}</td>
@@ -712,6 +875,7 @@ function renderOrder() {
     <div class="order-head">
       <input class="order-name" id="oName" placeholder="Nazwa zamówienia / klient…" value="${esc(order().name || '')}" spellcheck="false">
       <button class="btn" id="oAdd">+ Pozycja ręczna</button>
+      <button class="btn primary" id="oSave">Zapisz jako zamówienie</button>
       <button class="btn" id="oCopy">Kopiuj podsumowanie</button>
       <button class="btn" id="oCsv">Eksport CSV</button>
       <button class="btn danger" id="oClear">Wyczyść</button>
@@ -722,6 +886,7 @@ function renderOrder() {
       <tbody>${rows}</tbody>
       <tfoot><tr><td></td><td>Razem</td><td></td><td class="r">${fmtNum(r.grams, 0)} g</td><td class="r">${fmtDuration(r.minutes)}</td><td class="r">${r.prints}</td><td class="r">${fmtMoney(r.filament, c)}</td><td></td></tr></tfoot>
     </table>
+    ${stockWarnings(r.byFil.map((b) => ({ filament: b.filament, grams: b.grams })))}
     <div class="legend"><span class="src">⚙</span> dane ze slicera (G-code / 3MF) · <span class="src est">~</span> szacunek z objętości modelu · puste pole = wartość automatyczna, wpisz liczbę, aby nadpisać</div>
     <div class="summary">
       <div class="scard"><h4>Materiały</h4>${mats}</div>
@@ -738,6 +903,7 @@ function renderOrder() {
   $('#oName').oninput = (e) => { order().name = e.target.value; saveSettings(); };
   $('#oAdd').onclick = () => { order().items.push({ id: 'i' + (orderSeq++).toString(36), name: 'Nowa pozycja', qty: 1 }); saveSettings(); updateOrderCount(); renderOrder(); el.querySelector('tbody tr:last-child input[data-k="name"]')?.select(); };
   $('#oClear').onclick = async () => { if (!lines.length || await confirmModal('Wyczyścić wycenę?', 'Usuniesz wszystkie pozycje z bieżącej wyceny. Pliki modeli zostaną nietknięte.', 'Wyczyść')) { order().items = []; order().name = ''; saveSettings(); updateOrderCount(); renderOrder(); } };
+  const sv = $('#oSave'); if (sv) sv.onclick = () => saveOrderToHistory(lines, r);
   $('#oCopy').onclick = () => api.copyText(orderSummaryText(lines, r)).then(() => toast('Skopiowano podsumowanie do schowka'));
   $('#oCsv').onclick = async () => { const p = await safe(() => api.saveFile(`${(order().name || 'wycena').replace(/[\\/:*?"<>|]/g, '_')}.csv`, orderCsv(lines, r))); if (p) toast('Zapisano CSV'); };
   const os = $('#oSettings'); if (os) os.onclick = () => openSettings('pricing');
@@ -745,7 +911,7 @@ function renderOrder() {
     const it = findItem(tr);
     const line = lines.find((l) => l.it === it);
     tr.querySelector('[data-rm]').onclick = () => { order().items = order().items.filter((x) => x !== it); saveSettings(); updateOrderCount(); renderOrder(); };
-    tr.querySelector('[data-open]')?.addEventListener('click', () => { if (line.f) { selectCard(line.f.rel); renderOrder(); } });
+    tr.querySelectorAll('[data-open]').forEach((x) => x.addEventListener('click', () => { if (line.f) { selectCard(line.f.rel); renderOrder(); } }));
     tr.querySelectorAll('.cell').forEach((inp) => {
       inp.onchange = async () => {
         const k = inp.dataset.k;
@@ -774,7 +940,7 @@ async function setPrintMeta(rel, patch) {
 function orderSummaryText(lines, r) {
   const c = cur(), p = P();
   const out = [`Wycena${order().name ? ': ' + order().name : ''}`, ''];
-  for (const l of lines) if (!l.missing && l.qty > 0) out.push(`• ${l.name}${l.qty > 1 ? ` ×${l.qty}` : ''} — ${fmtNum(l.grams || 0, 0)} g, ${fmtDuration(l.minutes)} (${filLabel(l.filament)})`);
+  for (const l of lines) if (!l.missing && l.qty > 0) out.push(`• ${l.name}${l.qty > 1 ? ` ×${l.qty}` : ''} — ${fmtNum(l.grams || 0, 0)} g, ${fmtDuration(l.minutes)} (${l.parts.map((p) => filLabel(p.filament)).filter((v, i, a) => a.indexOf(v) === i).join(' + ')})`);
   out.push('', `Filament: ${fmtMoney(r.filament, c)} (${fmtNum(r.grams, 0)} g)`, `Prąd: ${fmtMoney(r.energy, c)} (${fmtNum(r.kWh, 2)} kWh)`,
     `Eksploatacja drukarki: ${fmtMoney(r.wear, c)} (${fmtNum(r.hours, 2)} h)`, `Mój czas: ${fmtMoney(r.labor, c)} (${fmtNum(r.laborH, 2)} h)`,
     `Bufor na awarie: ${fmtMoney(r.buffer, c)}`, `Koszt: ${fmtMoney(r.cost, c)}`);
@@ -785,10 +951,292 @@ function orderCsv(lines, r) {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const n = (v, d = 2) => (Number(v) || 0).toFixed(d).replace('.', ',');
   const rows = [['Pozycja', 'Filament', 'Kolor', 'Gramy', 'Czas (min)', 'Ile razy', 'Koszt filamentu'].map(q).join(';')];
-  for (const l of lines) if (!l.missing) rows.push([q(l.name), q(l.filament?.name), q(l.filament?.color), n(l.grams, 1), n(l.minutes, 0), l.qty, n(l.filament && l.grams ? l.grams * l.qty / 1000 * l.filament.pricePerKg : 0)].join(';'));
+  for (const l of lines) if (!l.missing) for (const [pi, p] of l.parts.entries()) rows.push([q(l.name + (l.multi ? ` [${p.name}]` : '')), q(p.filament?.name), q(p.filament?.color), n(p.grams, 1), pi === 0 ? n(l.minutes, 0) : '', l.qty, n(p.filament && p.grams ? p.grams * l.qty / 1000 * p.filament.pricePerKg : 0)].join(';'));
   rows.push('', [q('Filament'), n(r.filament)].join(';'), [q('Prąd (kWh)'), n(r.kWh, 3), n(r.energy)].join(';'), [q('Eksploatacja (h)'), n(r.hours), n(r.wear)].join(';'),
     [q('Mój czas (h)'), n(r.laborH), n(r.labor)].join(';'), [q('Bufor'), n(P().buffer), n(r.buffer)].join(';'), [q('Koszt'), n(r.cost)].join(';'), [q('Cena dla klienta'), n(r.price)].join(';'));
   return rows.join('\r\n');
+}
+
+// ---------- magazyn filamentów ----------
+const tracked = (fl) => !!fl && fl.remaining != null && Number.isFinite(Number(fl.remaining));
+function stockWarnings(list) {
+  const need = new Map();
+  for (const x of list) if (x.filament && x.grams > 0) need.set(x.filament.id, (need.get(x.filament.id) || 0) + x.grams);
+  const msgs = [];
+  for (const [id, g] of need) {
+    const fl = filamentById(id);
+    if (!tracked(fl)) continue;
+    if (fl.remaining < g) msgs.push(`${filLabel(fl)}: potrzeba ${fmtNum(g, 0)} g, na stanie tylko ${fmtNum(fl.remaining, 0)} g`);
+    else if (fl.remaining - g < S.stock.lowThreshold) msgs.push(`${filLabel(fl)}: po wydruku zostanie ${fmtNum(fl.remaining - g, 0)} g`);
+  }
+  return msgs.length ? `<div class="stockwarn">${msgs.map((m) => `<div>⚠ ${esc(m)}</div>`).join('')}</div>` : '';
+}
+function consume(parts, ref, label) {
+  const agg = new Map();
+  for (const p of parts) { if (!p.filament || !(p.grams > 0)) continue; agg.set(p.filament.id, (agg.get(p.filament.id) || 0) + p.grams); }
+  const entries = [];
+  for (const [id, g] of agg) {
+    const fl = filamentById(id);
+    if (!tracked(fl)) continue;
+    fl.remaining = Math.round((Number(fl.remaining) - g) * 10) / 10;
+    entries.push({ filamentId: id, grams: Math.round(g * 10) / 10 });
+  }
+  if (!entries.length) return null;
+  const log = { id: 'l' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), date: Date.now(), ref, label, entries, reverted: false };
+  S.stockLog.unshift(log);
+  S.stockLog = S.stockLog.slice(0, 400);
+  saveSettings();
+  toast(`Odjęto z magazynu: ${entries.map((e) => `${fmtNum(e.grams, 0)} g ${filLabel(filamentById(e.filamentId))}`).join(', ')}`, false, { label: 'Cofnij', fn: () => revertLog(log.id) });
+  updateStockCount();
+  if (st.special === 'stock') renderStock();
+  return log.id;
+}
+function revertLog(id, quiet = false) {
+  const log = S.stockLog.find((l) => l.id === id);
+  if (!log || log.reverted) return;
+  for (const e of log.entries) { const fl = filamentById(e.filamentId); if (tracked(fl)) fl.remaining = Math.round((Number(fl.remaining) + e.grams) * 10) / 10; }
+  log.reverted = true;
+  saveSettings();
+  if (!quiet) toast('Przywrócono filament do magazynu');
+  updateStockCount();
+  if (st.special === 'stock') renderStock();
+}
+function revertByRef(ref) { const log = S.stockLog.find((l) => !l.reverted && l.ref === ref); if (log) revertLog(log.id); }
+function updateStockCount() {
+  const el = $('#stockCount'); if (!el || !S) return;
+  const low = S.filaments.filter((fl) => tracked(fl) && fl.remaining < S.stock.lowThreshold).length;
+  el.textContent = low ? `${low} ⚠` : '';
+  el.classList.toggle('warn', low > 0);
+}
+async function setStatus(rels, status) {
+  for (const rel of rels) {
+    const prev = metaOf(rel).status || '';
+    if (prev === status) continue;
+    await setMeta(rel, { status });
+    if (!S.stock.onModelPrinted) continue;
+    const f = lib.files.find((x) => x.rel === rel);
+    if (status === 'printed' && f) {
+      const d = printData(f);
+      consume(d.parts.map((p) => ({ filament: p.filament, grams: p.grams || 0 })), 'model:' + rel, f.name);
+    } else if (prev === 'printed') revertByRef('model:' + rel);
+  }
+  renderSidebar(); renderGrid(); renderDetail();
+}
+
+function renderStock() {
+  const el = $('#stock');
+  const c = cur();
+  const value = S.filaments.reduce((a, fl) => a + (tracked(fl) ? Math.max(0, fl.remaining) / 1000 * fl.pricePerKg : 0), 0);
+  const cards = S.filaments.map((fl) => {
+    const t = tracked(fl);
+    const pct = t ? Math.max(0, Math.min(100, fl.remaining / (fl.spoolWeight || 1000) * 100)) : 0;
+    const low = t && fl.remaining < S.stock.lowThreshold;
+    return `<div class="spool ${low ? 'low' : ''}" data-id="${esc(fl.id)}">
+      <div class="spool-top"><span class="disc" style="background:${esc(fl.hex || '#888')}"></span>
+        <div><div class="sp-name">${esc(fl.name)}</div><div class="sp-sub">${esc(fl.color)} · ${esc(fl.type || '')} · ${fmtNum(fl.pricePerKg)} ${esc(c)}/kg</div></div></div>
+      ${t ? `<div class="bar"><i style="width:${pct}%"></i></div>
+        <div class="sp-nums"><b>${fmtNum(fl.remaining, 0)} g</b><span>z ${fmtNum(fl.spoolWeight || 1000, 0)} g · ${fmtMoney(Math.max(0, fl.remaining) / 1000 * fl.pricePerKg, c)}</span></div>
+        ${low ? `<div class="sp-low">Kończy się — poniżej ${fmtNum(S.stock.lowThreshold, 0)} g</div>` : ''}
+        <div class="sp-btns"><button class="btn" data-a="add">+1 szpula</button><button class="btn" data-a="set">Ustaw stan…</button><button class="icon-btn" data-a="untrack" title="Przestań śledzić">✕</button></div>`
+      : `<div class="sp-untracked">Stan nie jest śledzony</div><div class="sp-btns"><button class="btn primary" data-a="set">Ustaw stan…</button><button class="btn" data-a="full">Pełna szpula</button></div>`}
+    </div>`;
+  }).join('');
+  const logRows = S.stockLog.slice(0, 60).map((l) => `<tr class="${l.reverted ? 'reverted' : ''}">
+      <td>${fmtDate(l.date)}</td><td>${esc(l.label || '')}</td>
+      <td>${l.entries.map((e) => { const fl = filamentById(e.filamentId); return `${swatch(fl)}${fmtNum(e.grams, 1)} g ${esc(fl ? filLabel(fl) : '(usunięty filament)')}`; }).join('<br>')}</td>
+      <td class="r">${l.reverted ? '<small>cofnięte</small>' : `<button class="btn" data-undo="${esc(l.id)}">Cofnij</button>`}</td></tr>`).join('');
+  el.innerHTML = `
+    <div class="order-head"><div class="vtitle">Magazyn filamentów</div><span class="vsub">wartość na stanie: <b>${fmtMoney(value, c)}</b></span><span style="flex:1"></span>
+      <button class="btn" id="stEdit">Edytuj filamenty…</button></div>
+    <div class="spools">${cards}</div>
+    <div class="stock-settings">
+      <label class="check"><input type="checkbox" id="stModel" ${S.stock.onModelPrinted ? 'checked' : ''}> Odejmuj filament, gdy oznaczę model jako „Wydrukowane”</label>
+      <label class="check">Dla zamówień odejmuj filament przy statusie
+        <select id="stOrder"><option value="printing" ${S.stock.onOrderStatus === 'printing' ? 'selected' : ''}>„W druku”</option><option value="done" ${S.stock.onOrderStatus === 'done' ? 'selected' : ''}>„Wydane”</option><option value="off" ${S.stock.onOrderStatus === 'off' ? 'selected' : ''}>nigdy</option></select></label>
+      <label class="check">Ostrzegaj, gdy na szpuli zostaje mniej niż <input type="number" id="stLow" min="0" step="10" value="${S.stock.lowThreshold}" style="width:80px"> g</label>
+      <p class="hint">Wybierz jeden sposób: odejmowanie przy modelach albo przy zamówieniach. Przy obu naraz ten sam wydruk zostanie odjęty dwa razy.</p>
+    </div>
+    <div class="label">Historia zużycia</div>
+    ${logRows ? `<table class="otable log"><thead><tr><th>Data</th><th>Za co</th><th>Filament</th><th></th></tr></thead><tbody>${logRows}</tbody></table>` : '<div class="muted-note">Brak wpisów. Zużycie pojawi się po oznaczeniu modelu jako wydrukowany albo zmianie statusu zamówienia.</div>'}`;
+  $('#stEdit').onclick = () => openSettings('filaments');
+  $('#stModel').onchange = (e) => { S.stock.onModelPrinted = e.target.checked; saveSettings(); };
+  $('#stOrder').onchange = (e) => { S.stock.onOrderStatus = e.target.value; saveSettings(); };
+  $('#stLow').onchange = (e) => { S.stock.lowThreshold = Math.max(0, parseFloat(e.target.value) || 0); saveSettings(); updateStockCount(); renderStock(); };
+  el.querySelectorAll('.spool').forEach((card) => {
+    const fl = filamentById(card.dataset.id);
+    card.querySelectorAll('[data-a]').forEach((b) => b.onclick = async () => {
+      const a = b.dataset.a;
+      if (a === 'add') fl.remaining = Number(fl.remaining) + (fl.spoolWeight || 1000);
+      if (a === 'full') fl.remaining = fl.spoolWeight || 1000;
+      if (a === 'untrack') fl.remaining = null;
+      if (a === 'set') {
+        const v = await promptModal(`Ile gramów zostało: ${filLabel(fl)}?`, tracked(fl) ? String(fl.remaining) : String(fl.spoolWeight || 1000), 'Zapisz');
+        if (v == null) return;
+        const n = parseFloat(v.replace(',', '.'));
+        if (!Number.isFinite(n) || n < 0) return toast('Nieprawidłowa wartość', true);
+        fl.remaining = n;
+      }
+      saveSettings(); updateStockCount(); renderStock();
+    });
+  });
+  el.querySelectorAll('[data-undo]').forEach((b) => b.onclick = () => revertLog(b.dataset.undo));
+}
+
+// ---------- historia zamówień ----------
+const ORDER_STATUS = { quoted: 'Wycenione', printing: 'W druku', done: 'Wydane', cancelled: 'Anulowane' };
+let ordersFilter = 'all';
+let ordersMonth = null;
+let ordersOpen = new Set();
+function nextOrderNo() {
+  const y = new Date().getFullYear();
+  const n = S.orders.filter((o) => o.year === y).reduce((a, o) => Math.max(a, o.seq || 0), 0) + 1;
+  return { year: y, seq: n, no: `${y}/${String(n).padStart(3, '0')}` };
+}
+function saveOrderToHistory(lines, r) {
+  const valid = lines.filter((l) => !l.missing && l.qty > 0);
+  if (!valid.length) return toast('Wycena jest pusta', true);
+  const no = nextOrderNo();
+  const o = {
+    id: 'o' + Date.now().toString(36), ...no, name: order().name || `Zamówienie ${no.no}`, createdAt: Date.now(), status: 'quoted', statusAt: { quoted: Date.now() },
+    items: valid.map((l) => ({ rel: l.it.rel || null, name: l.name, qty: l.qty, minutes: l.minutes || 0,
+      parts: l.parts.map((p) => ({ name: p.name || '', filamentId: p.filament ? p.filament.id : null, label: filLabel(p.filament), hex: p.filament ? p.filament.hex : null, grams: p.grams || 0, pricePerKg: p.filament ? p.filament.pricePerKg : 0 })) })),
+    totals: { cost: r.cost, price: r.price, grams: r.grams, minutes: r.minutes, prints: r.prints, filament: r.filament, energy: r.energy, wear: r.wear, labor: r.labor, buffer: r.buffer },
+    agreedPrice: null, consumedLog: null, note: '',
+  };
+  S.orders.unshift(o);
+  saveSettings();
+  updateOrdersCount();
+  toast(`Zapisano zamówienie ${o.no}`, false, { label: 'Pokaż', fn: () => setView({ special: 'orders' }) });
+}
+function setOrderStatus(o, status) {
+  const prev = o.status;
+  if (prev === status) return;
+  o.status = status;
+  o.statusAt = { ...(o.statusAt || {}), [status]: Date.now() };
+  const mode = S.stock.onOrderStatus;
+  const shouldConsume = mode !== 'off' && !o.consumedLog && ((mode === 'printing' && (status === 'printing' || status === 'done')) || (mode === 'done' && status === 'done'));
+  if (shouldConsume) {
+    const parts = [];
+    for (const it of o.items) for (const p of it.parts) parts.push({ filament: filamentById(p.filamentId), grams: p.grams * it.qty });
+    o.consumedLog = consume(parts, 'order:' + o.id, `Zamówienie ${o.no} – ${o.name}`) || 'none';
+  }
+  if ((status === 'quoted' || status === 'cancelled') && o.consumedLog) {
+    if (o.consumedLog !== 'none') revertLog(o.consumedLog);
+    o.consumedLog = null;
+  }
+  saveSettings();
+  updateOrdersCount();
+}
+const finalPrice = (o) => o.agreedPrice != null ? o.agreedPrice : o.totals.price;
+const monthKey = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
+const monthLabel = (k) => { const [y, m] = k.split('-'); return new Date(+y, +m - 1, 1).toLocaleDateString('pl-PL', { month: 'long', year: 'numeric' }); };
+function updateOrdersCount() { const el = $('#ordersCount'); if (el && S) el.textContent = S.orders.filter((o) => o.status === 'quoted' || o.status === 'printing').length || ''; }
+
+function orderToText(o) {
+  const c = cur();
+  const out = [`Zamówienie ${o.no}: ${o.name}`, ''];
+  for (const it of o.items) out.push(`• ${it.name}${it.qty > 1 ? ` ×${it.qty}` : ''} — ${fmtNum(it.parts.reduce((a, p) => a + p.grams, 0), 0)} g, ${fmtDuration(it.minutes)} (${[...new Set(it.parts.map((p) => p.label))].join(' + ')})`);
+  out.push('', `Koszt: ${fmtMoney(o.totals.cost, c)}`, `Cena: ${fmtMoney(finalPrice(o), c)}`);
+  return out.join('\n');
+}
+
+function renderOrders() {
+  const el = $('#orders');
+  const c = cur();
+  const months = [...new Set([monthKey(Date.now()), ...S.orders.map((o) => monthKey(o.statusAt?.done || o.createdAt))])].sort().reverse();
+  if (!ordersMonth || !months.includes(ordersMonth)) ordersMonth = months[0];
+  const doneIn = S.orders.filter((o) => o.status === 'done' && monthKey(o.statusAt?.done || o.createdAt) === ordersMonth);
+  const sum = (arr, fn) => arr.reduce((a, o) => a + fn(o), 0);
+  const revenue = sum(doneIn, finalPrice), cost = sum(doneIn, (o) => o.totals.cost);
+  const list = S.orders.filter((o) => ordersFilter === 'all' || o.status === ordersFilter);
+  const rows = list.map((o) => {
+    const open = ordersOpen.has(o.id);
+    const nItems = o.items.reduce((a, it) => a + it.qty, 0);
+    return `<tr data-id="${esc(o.id)}" class="ord ${o.status}">
+      <td class="mono"><button class="caretbtn ${open ? 'open' : ''}" data-toggle>▶</button>${esc(o.no)}</td>
+      <td><input class="cell" data-k="name" value="${esc(o.name)}" spellcheck="false"></td>
+      <td class="mono small">${new Date(o.createdAt).toLocaleDateString('pl-PL')}</td>
+      <td class="r">${nItems}</td>
+      <td class="r mono">${fmtMoney(o.totals.cost, c)}</td>
+      <td class="r"><input class="cell num wide" data-k="agreedPrice" value="${o.agreedPrice != null ? fmtNum(o.agreedPrice) : ''}" placeholder="${fmtNum(o.totals.price)}" title="Cena uzgodniona z klientem (puste = wyliczona)"></td>
+      <td><select class="cell status-sel ${o.status}" data-k="status">${Object.entries(ORDER_STATUS).map(([k, v]) => `<option value="${k}" ${k === o.status ? 'selected' : ''}>${v}</option>`).join('')}</select></td>
+      <td class="r nowrap"><button class="icon-btn" data-load title="Wczytaj do wyceny">↺</button><button class="icon-btn" data-copy title="Kopiuj podsumowanie">⧉</button><button class="icon-btn" data-del title="Usuń">✕</button></td>
+    </tr>${open ? `<tr class="ord-detail"><td></td><td colspan="7">
+      ${o.items.map((it) => `<div class="od-item"><b>${esc(it.name)}</b>${it.qty > 1 ? ` ×${it.qty}` : ''} <span class="mono small">${fmtDuration(it.minutes)}</span>
+        <span class="od-parts">${it.parts.map((p) => `<span>${swatch({ hex: p.hex })}${esc(p.label)} ${fmtNum(p.grams, 1)} g</span>`).join('')}</span></div>`).join('')}
+      <div class="od-meta">${Object.entries(o.statusAt || {}).map(([k, t]) => `${ORDER_STATUS[k]}: ${fmtDate(t)}`).join(' · ')}${o.consumedLog && o.consumedLog !== 'none' ? ' · filament odjęty z magazynu' : ''}</div>
+      <textarea class="notes" data-k="note" placeholder="Notatka do zamówienia (klient, termin, adres wysyłki…)">${esc(o.note || '')}</textarea>
+    </td></tr>` : ''}`;
+  }).join('');
+  el.innerHTML = `
+    <div class="order-head"><div class="vtitle">Zamówienia</div><span style="flex:1"></span>
+      <select id="oMonth">${months.map((m) => `<option value="${m}" ${m === ordersMonth ? 'selected' : ''}>${monthLabel(m)}</option>`).join('')}</select></div>
+    <div class="kpis">
+      <div class="kpi"><span>Wydane w miesiącu</span><b>${doneIn.length}</b></div>
+      <div class="kpi"><span>Przychód</span><b>${fmtMoney(revenue, c)}</b></div>
+      <div class="kpi"><span>Koszt własny</span><b>${fmtMoney(cost, c)}</b></div>
+      <div class="kpi accent"><span>Zysk</span><b>${fmtMoney(revenue - cost, c)}</b></div>
+      <div class="kpi"><span>Filament</span><b>${fmtNum(sum(doneIn, (o) => o.totals.grams) / 1000, 2)} kg</b></div>
+      <div class="kpi"><span>Czas druku</span><b>${fmtDuration(sum(doneIn, (o) => o.totals.minutes))}</b></div>
+    </div>
+    <div class="chips">${[['all', 'Wszystkie'], ...Object.entries(ORDER_STATUS)].map(([k, v]) => `<button class="chip ${ordersFilter === k ? 'on' : ''}" data-f="${k}">${v} <small>${k === 'all' ? S.orders.length : S.orders.filter((o) => o.status === k).length}</small></button>`).join('')}</div>
+    ${list.length ? `<table class="otable orders"><thead><tr><th>Nr</th><th>Nazwa</th><th>Data</th><th class="r">Szt.</th><th class="r">Koszt</th><th class="r">Cena</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+      : `<div class="empty-order"><div class="big">Brak zamówień</div>Przygotuj wycenę i kliknij „Zapisz jako zamówienie”.</div>`}`;
+  $('#oMonth').onchange = (e) => { ordersMonth = e.target.value; renderOrders(); };
+  el.querySelectorAll('[data-f]').forEach((b) => b.onclick = () => { ordersFilter = b.dataset.f; renderOrders(); });
+  el.querySelectorAll('tr.ord').forEach((tr) => {
+    const o = S.orders.find((x) => x.id === tr.dataset.id);
+    tr.querySelector('[data-toggle]').onclick = () => { ordersOpen.has(o.id) ? ordersOpen.delete(o.id) : ordersOpen.add(o.id); renderOrders(); };
+    tr.querySelector('[data-k="name"]').onchange = (e) => { o.name = e.target.value.trim() || o.name; saveSettings(); };
+    tr.querySelector('[data-k="agreedPrice"]').onchange = (e) => {
+      const v = e.target.value.trim();
+      const n = v === '' ? null : parseFloat(v.replace(/\s/g, '').replace(',', '.'));
+      if (v !== '' && !Number.isFinite(n)) return toast('Nieprawidłowa cena', true);
+      o.agreedPrice = n; saveSettings(); renderOrders();
+    };
+    tr.querySelector('[data-k="status"]').onchange = (e) => { setOrderStatus(o, e.target.value); renderOrders(); };
+    tr.querySelector('[data-copy]').onclick = () => api.copyText(orderToText(o)).then(() => toast('Skopiowano'));
+    tr.querySelector('[data-load]').onclick = () => {
+      S.order = { name: o.name, items: o.items.map((it) => it.rel && lib.files.some((f) => f.rel === it.rel)
+        ? { id: 'i' + (orderSeq++).toString(36), rel: it.rel, qty: it.qty }
+        : { id: 'i' + (orderSeq++).toString(36), name: it.name, qty: it.qty, grams: it.parts.reduce((a, p) => a + p.grams, 0), minutes: it.minutes, filamentId: it.parts[0]?.filamentId || null }) };
+      saveSettings(); updateOrderCount(); setView({ special: 'order' });
+      toast(`Wczytano ${o.no} do wyceny`);
+    };
+    tr.querySelector('[data-del]').onclick = async () => {
+      if (!(await confirmModal(`Usunąć zamówienie ${o.no}?`, 'Zamówienie zniknie z historii. Odjęty filament nie wróci automatycznie do magazynu; możesz to cofnąć w historii zużycia.', 'Usuń'))) return;
+      S.orders = S.orders.filter((x) => x !== o); saveSettings(); updateOrdersCount(); renderOrders();
+    };
+    const det = tr.nextElementSibling;
+    if (det && det.classList.contains('ord-detail')) {
+      const ta = det.querySelector('textarea');
+      ta.oninput = () => { o.note = ta.value; saveSettings(); };
+    }
+  });
+}
+
+// ---------- duplikaty ----------
+let dupState = { computing: false, groups: null, byRel: new Map(), key: '' };
+const hashKey = (f) => `mv.hash:${f.rel}:${f.mtime}:${f.size}`;
+async function computeDups() {
+  if (!lib || dupState.computing) return;
+  const key = lib.files.map((f) => f.rel + f.size + f.mtime).join('|');
+  if (dupState.groups && dupState.key === key) return;
+  dupState.computing = true;
+  renderGrid();
+  const bySize = new Map();
+  for (const f of lib.files) { if (!f.size) continue; if (!bySize.has(f.size)) bySize.set(f.size, []); bySize.get(f.size).push(f); }
+  const cand = [...bySize.values()].filter((g) => g.length > 1).flat();
+  const need = cand.filter((f) => !ls.get(hashKey(f), null)).map((f) => f.rel);
+  for (let i = 0; i < need.length; i += 25) {
+    const res = await api.hashFiles(need.slice(i, i + 25)).catch(() => ({}));
+    for (const [rel, h] of Object.entries(res)) { const f = lib.files.find((x) => x.rel === rel); if (f && h) ls.set(hashKey(f), h); }
+  }
+  const byHash = new Map();
+  for (const f of cand) { const h = ls.get(hashKey(f), null); if (!h) continue; if (!byHash.has(h)) byHash.set(h, []); byHash.get(h).push(f); }
+  const groups = [...byHash.values()].filter((g) => g.length > 1).sort((a, b) => b[0].size * b.length - a[0].size * a.length);
+  dupState = { computing: false, groups, byRel: new Map(groups.flatMap((g, i) => g.map((f) => [f.rel, i]))), key };
+  if (st.special === 'dups') renderGrid();
 }
 
 // ---------- ustawienia: okno ----------
@@ -869,6 +1317,12 @@ const PRICING_FIELDS = [
     ['margin', 'Marża (cena dla klienta)', '%', true],
     ['roundTo', 'Zaokrąglaj cenę dla klienta w górę do', 'zł'],
   ]],
+  ['Wydruki wielokolorowe (szacunki, gdy brak danych ze slicera)', [
+    ['purgePerChange', 'Filament zużyty na jedną zmianę koloru (purge + wieża)', 'g'],
+    ['changeTimeSec', 'Czas jednej zmiany koloru', 's'],
+    ['layerHeight', 'Wysokość warstwy (do liczenia zmian koloru)', 'mm'],
+    ['paintWall', 'Grubość malowanej warstwy koloru', 'mm'],
+  ]],
   ['Szacunki dla plików bez danych ze slicera', [
     ['estFill', 'Jaka część objętości modelu to plastik (ściany + wypełnienie)', '%', true],
     ['estGramsPerHour', 'Wydajność drukarki', 'g/h'],
@@ -895,8 +1349,8 @@ function tabPricing(body) {
 function tabFilaments(body) {
   const types = ['PLA', 'PLA+', 'PETG', 'ABS', 'ASA', 'TPU', 'PA', 'PC', 'Inny'];
   const draw = () => {
-    body.innerHTML = `<p class="hint" style="margin-top:0">Cena za kg służy do wyceny, gęstość do przeliczeń z objętości, a kolor do podglądu 3D.</p>
-    <table class="ftable"><thead><tr><th></th><th>Nazwa</th><th>Kolor</th><th>Typ</th><th class="r">Cena/kg</th><th class="r">Gęstość</th><th title="Domyślny">★</th><th></th></tr></thead><tbody>
+    body.innerHTML = `<p class="hint" style="margin-top:0">Cena za kg służy do wyceny, gęstość do przeliczeń z objętości, a kolor do podglądu 3D i automatycznego dopasowania szpul do kolorów z pliku. Stan szpul ustawisz w widoku „Magazyn filamentów”.</p>
+    <table class="ftable"><thead><tr><th></th><th>Nazwa</th><th>Kolor</th><th>Typ</th><th class="r">Cena/kg</th><th class="r">Gęstość</th><th class="r" title="Waga filamentu na pełnej szpuli">Szpula (g)</th><th title="Domyślny">★</th><th></th></tr></thead><tbody>
     ${S.filaments.map((fl) => `<tr data-id="${esc(fl.id)}">
       <td><input type="color" data-k="hex" value="${esc(fl.hex || '#888888')}"></td>
       <td><input data-k="name" value="${esc(fl.name)}" spellcheck="false"></td>
@@ -904,6 +1358,7 @@ function tabFilaments(body) {
       <td><select data-k="type">${types.map((t) => `<option ${t === fl.type ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
       <td><input data-k="pricePerKg" type="number" step="0.01" min="0" class="num" value="${fl.pricePerKg}"></td>
       <td><input data-k="density" type="number" step="0.01" min="0" class="num" value="${fl.density}"></td>
+      <td><input data-k="spoolWeight" type="number" step="50" min="0" class="num" value="${fl.spoolWeight || 1000}"></td>
       <td><input type="radio" name="fdef" ${P().defaultFilament === fl.id ? 'checked' : ''} title="Ustaw jako domyślny"></td>
       <td><button class="icon-btn" data-del title="Usuń">✕</button></td></tr>`).join('')}
     </tbody></table>
@@ -914,7 +1369,7 @@ function tabFilaments(body) {
         const ev = inp.type === 'color' || inp.tagName === 'SELECT' ? 'onchange' : 'oninput';
         inp[ev] = () => {
           const k = inp.dataset.k;
-          fl[k] = (k === 'pricePerKg' || k === 'density') ? (parseFloat(inp.value) || 0) : inp.value;
+          fl[k] = (k === 'pricePerKg' || k === 'density' || k === 'spoolWeight') ? (parseFloat(inp.value) || 0) : inp.value;
           saveSettings();
           if (k === 'hex') applyAppearance(false);
         };
@@ -928,7 +1383,7 @@ function tabFilaments(body) {
       };
     });
     body.querySelector('#fAdd').onclick = () => {
-      S.filaments.push({ id: 'f' + Date.now().toString(36), name: 'Nowy filament', color: 'kolor', hex: '#888888', type: 'PLA', pricePerKg: 60, density: 1.24 });
+      S.filaments.push({ id: 'f' + Date.now().toString(36), name: 'Nowy filament', color: 'kolor', hex: '#888888', type: 'PLA', pricePerKg: 60, density: 1.24, spoolWeight: 1000, remaining: null });
       saveSettings(); draw();
       body.querySelector('tbody tr:last-child input[data-k="name"]')?.select();
     };
@@ -945,18 +1400,13 @@ function applyAppearance(colorChanged) {
   }
   if (viewer && viewer.holder && focused) {
     const f = lib && lib.files.find((x) => x.rel === focused);
-    if (f) viewer.setColor(previewColor(f));
+    if (f) viewer.setSlotColors(slotColors(f));
   }
-}
-function previewColor(f) {
-  if (S.appearance.useFilamentColor) {
-    const d = printData(f);
-    if (d.filamentSet && d.filament && d.filament.hex) return d.filament.hex;
-  }
-  return S.appearance.modelColor;
 }
 function afterPricingChange() {
   if (st.special === 'order') renderOrder();
+  if (st.special === 'stock') renderStock();
+  if (st.special === 'orders') renderOrders();
   if (sel.size === 1) renderDetail();
   renderSidebar();
 }
@@ -998,7 +1448,7 @@ function renderDetail() {
         <button class="btn" id="bMove">Przenieś do…</button>
         <button class="btn danger" id="bDel">Usuń</button>
       </div>`;
-    body.querySelectorAll('[data-st]').forEach((b) => b.onclick = () => setMetaMany(rels, () => ({ status: b.dataset.st })));
+    body.querySelectorAll('[data-st]').forEach((b) => b.onclick = () => setStatus(rels, b.dataset.st));
     $('#bTag').onclick = () => bulkTag(rels);
     $('#bOrder').onclick = () => addToOrder(rels);
     $('#bFav').onclick = () => { const all = rels.every((r) => metaOf(r).favorite); setMetaMany(rels, () => ({ favorite: !all })); };
@@ -1043,6 +1493,8 @@ function renderDetail() {
       <input id="dTagIn" placeholder="dodaj tag + Enter" list="allTags" spellcheck="false">
     </div>
     <datalist id="allTags">${[...new Set(Object.values(lib.meta).flatMap((x) => x.tags || []))].map((t) => `<option value="${esc(t)}">`).join('')}</datalist>
+    <div class="label">Źródło (link do Printables, MakerWorld, Thingiverse…)</div>
+    <div class="srcrow"><input class="field sm" id="dSrc" value="${esc(m.source || '')}" placeholder="${esc(urlFromText(m.notes) || 'https://…')}" spellcheck="false"><button class="btn" id="dSrcOpen" ${m.source || urlFromText(m.notes) ? '' : 'disabled'}>Otwórz ↗</button></div>
     <div class="label">Notatki</div>
     <textarea class="notes" id="dNotes" placeholder="np. ustawienia druku, filament, podpory, link do źródła…">${esc(m.notes || '')}</textarea>
     <div class="btns">
@@ -1055,7 +1507,7 @@ function renderDetail() {
   $('#dName').onclick = () => renameItem(rel, false);
   $('#dPath').onclick = () => api.reveal(rel);
   $('#dFav').onclick = () => setMetaMany([rel], (x) => ({ favorite: !x.favorite }));
-  body.querySelectorAll('#dStatus [data-st]').forEach((b) => b.onclick = () => setMetaMany([rel], () => ({ status: b.dataset.st })));
+  body.querySelectorAll('#dStatus [data-st]').forEach((b) => b.onclick = () => setStatus([rel], b.dataset.st));
   body.querySelectorAll('[data-rm]').forEach((x) => x.onclick = () => setMetaMany([rel], (mm) => ({ tags: (mm.tags || []).filter((t) => t !== x.dataset.rm) })));
   const tin = $('#dTagIn');
   tin.onkeydown = async (e) => {
@@ -1076,6 +1528,15 @@ function renderDetail() {
   notes.oninput = () => { clearTimeout(nt); nt = setTimeout(saveNotes, 700); };
   notes.onblur = saveNotes;
   $('#dOpen').onclick = () => api.open(rel).catch((er) => toast(er.message, true));
+  const srcIn = $('#dSrc');
+  srcIn.onchange = async () => {
+    let v = srcIn.value.trim();
+    if (v && !/^https?:\/\//i.test(v)) v = 'https://' + v;
+    await setMeta(rel, { source: v });
+    renderDetail(); renderGrid();
+  };
+  srcIn.onkeydown = (e) => { if (e.key === 'Enter') srcIn.blur(); };
+  $('#dSrcOpen').onclick = () => { const u = metaOf(rel).source || urlFromText(metaOf(rel).notes); if (u) api.openExternal(u).catch((er) => toast(er.message, true)); };
   $('#dReveal').onclick = () => api.reveal(rel);
   $('#dMove').onclick = async () => { const d = await pickFolderModal(`Przenieś „${f.name}”`); if (d !== null) await moveItems([rel], d); };
   $('#dDel').onclick = () => trashItems([rel], false);
@@ -1085,41 +1546,92 @@ function renderDetail() {
   loadPreview(f);
 }
 
+function urlFromText(t) { const m = String(t || '').match(/https?:\/\/[^\s<>"']+/i); return m ? m[0] : ''; }
+function perSlotFromSlicer(d) { return d.parts.every((p) => p.gramsSrc && p.gramsSrc !== 'szacunek' && p.gramsSrc !== 'ręcznie' && !String(p.gramsSrc).includes('podział')); }
+function srcTxt(x) { return x === 'ręcznie' ? 'wpisane ręcznie' : x === 'szacunek' ? 'szacunek' : x ? `z pliku ${x}` : ''; }
 function pricingSectionHtml(f) {
   const d = printData(f);
   const has = d.grams != null;
-  const r = has ? priceItems([{ grams: d.grams, minutes: d.minutes || 0, qty: 1, filament: d.filament }], P()) : null;
-  const srcTxt = (x) => x === 'ręcznie' ? 'wpisane ręcznie' : x === 'szacunek' ? 'szacunek z objętości' : x ? `z pliku ${x}` : '';
-  const hint = [d.gramsSrc && `gramy: ${srcTxt(d.gramsSrc)}`, d.minutesSrc && `czas: ${srcTxt(d.minutesSrc)}`].filter(Boolean).join(' · ');
+  const r = has ? priceItems([{ parts: d.parts.map((p) => ({ grams: p.grams || 0, filament: p.filament })), minutes: d.minutes || 0, qty: 1 }], P()) : null;
   const manual = metaOf(f.rel).print || {};
-  return `<div class="label">Wycena <button class="linkbtn" id="pSet">ustawienia</button></div>
-    <div class="pricebox">
-      <div class="prow"><span>Filament</span><span class="pfil">${swatch(d.filament)}<select id="pFil">${filamentOptions(d.filamentSet ? d.filament.id : '', true)}</select></span></div>
+  const c = cur();
+  let slotsHtml;
+  if (!d.multi) {
+    slotsHtml = `<div class="prow"><span>Filament</span><span class="pfil">${swatch(d.filament)}<select data-slot="0">${filamentOptions(d.filamentSet ? d.filament.id : '', true)}</select></span></div>
       <div class="prow two">
         <label><span>Gramy</span><input id="pG" class="field sm" value="${manual.grams != null ? fmtNum(manual.grams, manual.grams % 1 ? 1 : 0) : ''}" placeholder="${d.grams != null ? fmtNum(d.grams, 0) + ' g' : 'np. 74'}"></label>
         <label><span>Czas druku</span><input id="pT" class="field sm" value="${manual.minutes != null ? fmtDurShort(manual.minutes) : ''}" placeholder="${d.minutes != null ? fmtDurShort(d.minutes) : 'h:mm'}"></label>
+      </div>`;
+  } else {
+    slotsHtml = `<div class="mc-head"><span>${d.parts.length} kolory w pliku</span><small>kolor z pliku → szpula</small></div>
+      ${d.parts.map((pt) => `<div class="mc-row">
+        <span class="fhex" style="background:${esc(pt.fileHex || PALETTE[pt.slot % PALETTE.length])}" title="Kolor zapisany w pliku: ${esc(pt.fileHex || 'brak')}"></span>
+        <span class="mc-name" title="${esc(pt.name)}">${esc(pt.name)}</span>
+        <span class="pfil">${swatch(pt.filament)}<select data-slot="${pt.slot}">${slotFilamentOptions(pt)}</select></span>
+        <input class="field sm mc-g" data-slotg="${pt.slot}" value="${pt.manual != null ? fmtNum(pt.manual, pt.manual % 1 ? 1 : 0) : ''}" placeholder="${pt.grams != null ? fmtNum(pt.grams, 1) : '—'}" title="Gramy (puste = automatycznie, ${esc(srcTxt(pt.gramsSrc))})"><em>g</em>
+      </div>`).join('')}
+      <div class="prow two" style="margin-top:8px">
+        <label><span>Razem</span><input class="field sm" disabled value="${d.grams != null ? fmtNum(d.grams, 1) + ' g' : '—'}"></label>
+        <label><span>Czas druku</span><input id="pT" class="field sm" value="${manual.minutes != null ? fmtDurShort(manual.minutes) : ''}" placeholder="${d.minutes != null ? fmtDurShort(d.minutes) : 'h:mm'}"></label>
       </div>
-      ${hint ? `<div class="phint ${d.gramsSrc === 'szacunek' ? 'est' : ''}">${esc(hint)}${d.gramsSrc === 'szacunek' ? ' — dla dokładnej wyceny wpisz dane ze slicera' : ''}</div>` : ''}
+      <div class="phint">${perSlotFromSlicer(d) ? `Gramy per kolor ze slicera (z purge i wieżą)${d.changeSrc === 'G-code' ? ` · zmiany koloru: <b>${d.changes}</b>` : ''}` : `Zmiany koloru: <b>${d.changes}</b> ${d.changeSrc === 'G-code' ? '(policzone z G-code)' : d.changes ? '(szacunek z wysokości kolorów)' : ''}${d.purgeG ? ` · purge ≈ ${fmtNum(d.purgeG, 1)} g` : ''}${d.changeMin ? ` · +${fmtDuration(d.changeMin)} na zmiany` : ''}`}</div>`;
+  }
+  const hint = [d.gramsSrc && `gramy: ${srcTxt(d.gramsSrc)}`, d.minutesSrc && `czas: ${srcTxt(d.minutesSrc)}`].filter(Boolean).join(' · ');
+  const est = d.gramsSrc === 'szacunek' || d.gramsSrc === 'mieszane';
+  const stockWarn = has ? stockWarnings(d.parts.map((p) => ({ filament: p.filament, grams: p.grams || 0 }))) : '';
+  return `<div class="label">Wycena <button class="linkbtn" id="pSet">ustawienia</button></div>
+    <div class="pricebox">
+      ${slotsHtml}
+      ${hint ? `<div class="phint ${est ? 'est' : ''}">${esc(hint)}${d.gramsSrc === 'szacunek' ? ' — dla dokładnej wyceny potnij model w slicerze' : ''}</div>` : ''}
+      ${stockWarn}
       ${has ? breakdownHtml(r) + `<div class="phint">jako osobne zamówienie (z czasem na kontakt i pakowanie)</div>`
         : `<div class="phint">${f.viewable && f.ext !== 'gcode' ? 'Liczenie objętości…' : 'Brak danych — wpisz gramy i czas ze slicera.'}</div>`}
       <button class="btn" id="pAdd" style="margin-top:10px;width:100%">+ Dodaj do wyceny zamówienia</button>
     </div>`;
 }
+function slotFilamentOptions(pt) {
+  const def = defaultFilament();
+  const autoLbl = pt.auto ? `Auto: ${filLabel(pt.filament)}` : `Domyślny (${def ? filLabel(def) : '—'})`;
+  return `<option value="">${esc(autoLbl)}</option>` + S.filaments.map((fl) => `<option value="${esc(fl.id)}" ${pt.filamentSet && fl.id === pt.filament.id ? 'selected' : ''}>${esc(filLabel(fl))}</option>`).join('');
+}
 function bindPricingSection(f) {
   const rel = f.rel;
+  const after = () => { renderDetail(); if (st.special === 'order') renderOrder(); };
   $('#pSet').onclick = () => openSettings('pricing');
   $('#pAdd').onclick = () => addToOrder([rel]);
-  $('#pFil').onchange = async (e) => { await setPrintMeta(rel, { filamentId: e.target.value || null }); renderDetail(); if (st.special === 'order') renderOrder(); };
+  document.querySelectorAll('#detailBody select[data-slot]').forEach((sel) => sel.onchange = async () => {
+    const i = +sel.dataset.slot, v = sel.value || null;
+    const d = printData(f);
+    if (!d.multi) await setPrintMeta(rel, { filamentId: v });
+    else {
+      const slots = [...((metaOf(rel).print || {}).slots || [])];
+      slots[i] = { ...(slots[i] || {}), filamentId: v };
+      await setPrintMeta(rel, { slots });
+    }
+    after();
+  });
+  document.querySelectorAll('#detailBody input[data-slotg]').forEach((inp) => {
+    inp.onchange = async () => {
+      const i = +inp.dataset.slotg, v = inp.value.trim();
+      const val = v === '' ? null : parseFloat(v.replace(',', '.'));
+      if (v !== '' && !Number.isFinite(val)) return toast('Nieprawidłowa wartość', true);
+      const slots = [...((metaOf(rel).print || {}).slots || [])];
+      slots[i] = { ...(slots[i] || {}), grams: val };
+      await setPrintMeta(rel, { slots });
+      after();
+    };
+    inp.onkeydown = (e) => { if (e.key === 'Enter') inp.dispatchEvent(new Event('change')); };
+  });
   const bindNum = (id, key, parse) => {
     const inp = $(id);
+    if (!inp) return;
     inp.onchange = async () => {
       const v = inp.value.trim();
       const val = v === '' ? null : parse(v);
       if (v !== '' && !Number.isFinite(val)) { toast('Nieprawidłowa wartość', true); return; }
       await setPrintMeta(rel, { [key]: val });
       inp.blur();
-      renderDetail();
-      if (st.special === 'order') renderOrder();
+      after();
     };
     inp.onkeydown = (e) => { if (e.key === 'Enter') inp.dispatchEvent(new Event('change')); };
   };
@@ -1132,7 +1644,7 @@ async function loadPreview(f) {
   const token = ++viewToken;
   const msg = $('#viewerMsg');
   const tools = $('#viewerTools');
-  if (viewer.currentRel === f.rel + f.mtime && viewer.holder) { viewer.setColor(previewColor(f)); return; }
+  if (viewer.currentRel === f.rel + f.mtime && viewer.holder) { viewer.setSlotColors(slotColors(f)); return; }
   viewer.clear();
   viewer.currentRel = null;
   tools.hidden = true;
@@ -1149,18 +1661,15 @@ async function loadPreview(f) {
     await new Promise((r) => setTimeout(r, 16));
     const parsed = parseModel(f.ext, buf);
     if (token !== viewToken) return;
+    const hadColors = ls.get(colorsKey(f), undefined) !== undefined && !!(ls.get(statsKey(f), null) || parsed.isGcode);
+    try { storeParsedAnalysis(f, parsed); } catch (e) { console.warn(e); }
     viewer.show(parsed);
-    viewer.setColor(previewColor(f));
+    viewer.setSlotColors(slotColors(f));
+    if (!hadColors && token === viewToken && focused === f.rel && !document.activeElement?.closest('#detailBody')) setTimeout(() => renderDetail(), 0);
     viewer.currentRel = f.rel + f.mtime;
     msg.innerHTML = '';
     tools.hidden = false;
     $('#vTravel').hidden = !parsed.isGcode;
-    const prevStats = ls.get(statsKey(f), null);
-    if (!prevStats || prevStats.failed) {
-      const s = computeStats(viewer.holder, parsed.isGcode);
-      ls.set(statsKey(f), s);
-      if (token === viewToken && focused === f.rel && !document.activeElement?.closest('#detailBody')) renderDetail();
-    }
   } catch (e) {
     if (token !== viewToken) return;
     console.warn(e);
@@ -1222,6 +1731,8 @@ orderNav.addEventListener('dragover', (e) => { if (e.dataTransfer.types.includes
 orderNav.addEventListener('dragleave', () => orderNav.classList.remove('drop-hover'));
 orderNav.addEventListener('drop', (e) => { e.preventDefault(); orderNav.classList.remove('drop-hover'); const raw = e.dataTransfer.getData('application/x-modelvault'); if (raw && dragPayload?.kind === 'files') addToOrder(JSON.parse(raw)); });
 $('#settingsBtn').onclick = () => openSettings();
+$('#ordersNav').onclick = () => lib && setView({ special: 'orders' });
+$('#stockNav').onclick = () => S && setView({ special: 'stock' });
 
 (async () => {
   S = await api.getSettings();

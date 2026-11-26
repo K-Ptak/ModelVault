@@ -35,16 +35,20 @@ export function priceItems(items, p, includeOrderTime = true) {
   const byFil = new Map();
   for (const it of items) {
     const q = Math.max(0, Number(it.qty) || 0);
-    const g = (Number(it.grams) || 0) * q;
     const min = (Number(it.minutes) || 0) * q;
-    grams += g; minutes += min; prints += q;
-    const price = it.filament ? Number(it.filament.pricePerKg) || 0 : 0;
-    const c = (g / 1000) * price;
-    filament += c;
-    const key = it.filament ? it.filament.id : '_none';
-    const cur = byFil.get(key) || { filament: it.filament || null, grams: 0, cost: 0 };
-    cur.grams += g; cur.cost += c;
-    byFil.set(key, cur);
+    minutes += min; prints += q;
+    const parts = it.parts && it.parts.length ? it.parts : [{ grams: it.grams, filament: it.filament }];
+    for (const pt of parts) {
+      const g = (Number(pt.grams) || 0) * q;
+      grams += g;
+      const price = pt.filament ? Number(pt.filament.pricePerKg) || 0 : 0;
+      const c = (g / 1000) * price;
+      filament += c;
+      const key = pt.filament ? pt.filament.id : '_none';
+      const cur = byFil.get(key) || { filament: pt.filament || null, grams: 0, cost: 0 };
+      cur.grams += g; cur.cost += c;
+      byFil.set(key, cur);
+    }
   }
   const hours = minutes / 60;
   const kWh = hours * (p.printerW / 1000) + prints * p.startKWh;

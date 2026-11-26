@@ -40,6 +40,41 @@ i zaokrąglenie ceny dla klienta.
 - Ustawienia aplikacji, filamenty i bieżąca wycena są zapisane w `%APPDATA%\ModelVault\settings.json`.
   Gramy, czas i filament przypisany do modelu trafiają do `.modelvault.json` w bibliotece.
 
+## Wydruki wielokolorowe
+Aplikacja odczytuje, która część modelu ma który kolor:
+- **3MF z Bambu Studio / OrcaSlicer:** filament przypisany do obiektów i części
+  (`model_settings.config`), malowanie kolorów po powierzchni (`paint_color`) oraz kolory
+  filamentów z projektu. Po pocięciu odczytuje gramy **osobno dla każdego filamentu**, z purge i wieżą.
+- **3MF z PrusaSlicer:** ekstruder przypisany do obiektów i części, malowanie MMU
+  (`mmu_segmentation`), kolory ekstruderów.
+- **Standardowe materiały 3MF** (basematerials / colorgroup), np. z Fusion 360.
+- **G-code:** ścieżki rysowane osobno dla każdego narzędzia (T0, T1…), kolory z nagłówka,
+  gramy per filament i liczba zmian koloru policzona z pliku.
+- **OBJ** z kilkoma materiałami (`usemtl`).
+
+Podgląd 3D pokazuje każdy kolor osobno. W panelu wyceny każdemu kolorowi przypisujesz szpulę;
+aplikacja sama podpowiada szpulę o najbliższym kolorze („Auto”). Gdy nie ma danych ze slicera,
+zmiany koloru są szacowane z wysokości kolorów (k kolorów w warstwie = k−1 zmian), a do wyceny
+doliczany jest purge (g na zmianę) i czas zmian. Parametry są w Ustawienia → Wycena.
+
+## Magazyn filamentów
+Stan każdej szpuli w gramach, wartość filamentu na stanie i ostrzeżenia o kończących się szpulach.
+Ostrzeżenia pojawiają się też w wycenie, jeśli filamentu zabraknie. Filament jest odejmowany
+po oznaczeniu modelu jako „Wydrukowane” albo przy zmianie statusu zamówienia (do wyboru).
+Każde odjęcie można cofnąć z historii zużycia.
+
+## Zamówienia
+„Zapisz jako zamówienie” w wycenie tworzy zamówienie z numerem (np. 2026/001). Ma statusy
+Wycenione → W druku → Wydane / Anulowane, cenę uzgodnioną z klientem i notatkę.
+Podsumowanie miesiąca pokazuje przychód, koszt własny, zysk, zużyty filament i czas druku.
+Zamówienie można wczytać z powrotem do wyceny.
+
+## Duplikaty i źródła
+- **Duplikaty:** pliki o identycznej zawartości (porównanie sumą SHA-1), pogrupowane, z informacją,
+  ile miejsca można odzyskać.
+- **Źródło:** link do Printables / MakerWorld / Thingiverse przy modelu, otwierany jednym kliknięciem.
+  Jeśli w notatce jest link, aplikacja go podpowie.
+
 ## Ustawienia (Ctrl+,)
 - **Wygląd:** kolor modelu w podglądzie i na miniaturach, opcja użycia koloru przypisanego filamentu.
 - **Wycena:** wszystkie parametry kosztów, domyślny filament, waluta.

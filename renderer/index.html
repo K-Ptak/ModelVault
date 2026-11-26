@@ -36,7 +36,11 @@
   <div class="layout">
     <aside class="sidebar">
       <nav class="section" id="specials"></nav>
-      <div class="nav-item order-nav" id="orderNav"><span class="ico">∑</span>Wycena zamówienia<span class="count" id="orderCount">0</span></div>
+      <div class="nav-group">
+        <div class="nav-item" id="orderNav"><span class="ico">∑</span>Wycena zamówienia<span class="count" id="orderCount">0</span></div>
+        <div class="nav-item" id="ordersNav"><span class="ico">≡</span>Zamówienia<span class="count" id="ordersCount">0</span></div>
+        <div class="nav-item" id="stockNav"><span class="ico">◎</span>Magazyn filamentów<span class="count" id="stockCount"></span></div>
+      </div>
       <div class="section-title">
         <span>Foldery</span>
         <button class="icon-btn" id="newFolderBtn" title="Nowy folder w zaznaczonym">+</button>
@@ -50,6 +54,8 @@
       <div class="crumbs" id="crumbs"></div>
       <div class="grid" id="grid"></div>
       <div class="order" id="order" hidden></div>
+      <div class="order" id="orders" hidden></div>
+      <div class="order" id="stock" hidden></div>
       <div class="empty" id="empty" hidden></div>
       <div class="drop-overlay" id="dropOverlay" hidden><div>Upuść, aby skopiować do <b id="dropTarget"></b></div></div>
     </main>

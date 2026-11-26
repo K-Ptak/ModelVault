@@ -4,8 +4,8 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { ThreeMFLoader } from 'three/addons/loaders/3MFLoader.js';
 import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
-import { GCodeLoader } from 'three/addons/loaders/GCodeLoader.js';
 import { unzipSync } from 'three/addons/libs/fflate.module.js';
+import { parse3MFColors, parseGcodePaths, gcodeColorInfo, PALETTE } from './mc.js';
 
 let MODEL_COLOR = 0xf2a03d;
 export function setModelColor(hex) { MODEL_COLOR = new THREE.Color(hex).getHex(); }
@@ -26,50 +26,140 @@ function restyle(obj) {
   });
 }
 
-/** Zwraca { object, zUp, isGcode } */
+function meshPerSlot(slot, positions) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.computeVertexNormals();
+  const m = meshFromGeometry(geo);
+  m.material.side = THREE.DoubleSide;
+  m.userData.slot = slot;
+  return m;
+}
+
+/** Rozbija meshe OBJ z wieloma materiałami na osobne sloty kolorów. */
+function splitObjMaterials(obj) {
+  const names = [];
+  const out = new THREE.Group();
+  obj.traverse((c) => {
+    if (!c.isMesh) return;
+    const mats = Array.isArray(c.material) ? c.material : [c.material];
+    const groups = Array.isArray(c.material) && c.geometry.groups.length ? c.geometry.groups : [{ start: 0, count: c.geometry.attributes.position.count, materialIndex: 0 }];
+    const pos = c.geometry.attributes.position;
+    for (const g of groups) {
+      const name = (mats[g.materialIndex] && mats[g.materialIndex].name) || '';
+      let slot = names.indexOf(name);
+      if (slot < 0) { slot = names.length; names.push(name); }
+      const arr = new Float32Array(g.count * 3);
+      for (let k = 0; k < g.count; k++) { arr[k * 3] = pos.getX(g.start + k); arr[k * 3 + 1] = pos.getY(g.start + k); arr[k * 3 + 2] = pos.getZ(g.start + k); }
+      out.add(meshPerSlot(slot, arr));
+    }
+  });
+  return { object: out, slots: names.map((n, i) => ({ key: 'o' + i, ext: null, name: n || `Materiał ${i + 1}`, hex: null })) };
+}
+
+/** Zwraca { object, zUp, isGcode, slots:[{name, hex, ...}], info } */
 export function parseModel(ext, buffer) {
   switch (ext) {
     case 'stl': {
       const geo = new STLLoader().parse(buffer);
       geo.computeVertexNormals(); // wiele plików STL ma zerowe/błędne normalne
-      return { object: meshFromGeometry(geo), zUp: true };
+      return { object: meshFromGeometry(geo), zUp: true, slots: [{ key: 's0', name: '', hex: null }] };
     }
     case 'ply': {
       const geo = new PLYLoader().parse(buffer);
       const m = meshFromGeometry(geo);
       if (geo.attributes.color) m.material.vertexColors = true, m.material.color.set(0xffffff);
-      return { object: m, zUp: true };
+      return { object: m, zUp: true, slots: [{ key: 's0', name: '', hex: null }] };
     }
     case 'obj': {
       const text = new TextDecoder().decode(buffer);
       const obj = new OBJLoader().parse(text);
-      restyle(obj);
-      return { object: obj, zUp: false };
+      const r = splitObjMaterials(obj);
+      return { object: r.object, zUp: false, slots: r.slots.length ? r.slots : [{ key: 's0', name: '', hex: null }] };
     }
     case '3mf': {
+      const mc = parse3MFColors(buffer);
+      if (mc) {
+        const g = new THREE.Group();
+        mc.slots.forEach((s, i) => { if (s.positions.length) g.add(meshPerSlot(i, s.positions)); });
+        const slots = mc.slots.map(({ positions, ...rest }) => rest);
+        return { object: g, zUp: true, slots, info: { slice: mc.slice } };
+      }
       const obj = new ThreeMFLoader().parse(buffer);
       let meshes = 0;
       obj.traverse((c) => { if (c.isMesh) meshes++; });
       if (!meshes) throw new Error('Plik 3MF nie zawiera siatki, którą da się odczytać');
       restyle(obj);
-      return { object: obj, zUp: true };
+      return { object: obj, zUp: true, slots: [{ key: 's0', name: '', hex: null }] };
     }
     case 'gcode': {
       const text = new TextDecoder().decode(buffer);
-      const obj = new GCodeLoader().parse(text);
-      obj.traverse((c) => {
-        if (c.isLineSegments || c.isLine) {
-          const travel = c.material && c.material.name === 'path';
-          c.userData.travel = travel;
-          c.material = new THREE.LineBasicMaterial({ color: travel ? 0x5a6578 : MODEL_COLOR, transparent: travel, opacity: travel ? 0.35 : 1 });
-          if (travel) c.visible = false;
-        }
-      });
-      return { object: obj, zUp: false, isGcode: true };
+      const ci = gcodeColorInfo(text);
+      const paths = parseGcodePaths(text);
+      const g = new THREE.Group();
+      const slotOf = new Map(ci.tools.map((t, i) => [t, i]));
+      for (const [t, arr] of paths.tools) {
+        if (!slotOf.has(t)) { slotOf.set(t, ci.slots.length); ci.slots.push({ key: 't' + t, ext: t + 1, name: `Filament ${t + 1}`, hex: null }); }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+        const ls = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: MODEL_COLOR }));
+        ls.userData.slot = slotOf.get(t);
+        g.add(ls);
+      }
+      if (paths.travel.length) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(paths.travel, 3));
+        const ls = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x5a6578, transparent: true, opacity: 0.35 }));
+        ls.userData.travel = true; ls.visible = false;
+        g.add(ls);
+      }
+      if (!paths.tools.size) throw new Error('Nie znaleziono ścieżek druku w G-code');
+      return { object: g, zUp: true, isGcode: true, slots: ci.slots, info: { toolChanges: ci.toolChanges, perSlotGrams: ci.perSlotGrams } };
     }
     default:
       throw new Error('Brak podglądu dla tego formatu');
   }
+}
+
+/** Kolory slotów: tablica hex wg indeksu slotu */
+export function applySlotColors(object, colors) {
+  const cs = colors.map((h) => new THREE.Color(h || '#888888'));
+  object.traverse((o) => {
+    if (o.userData.travel) return;
+    if ((o.isMesh && !o.material.vertexColors) || o.isLine || o.isLineSegments) {
+      const c = cs[o.userData.slot ?? 0] || cs[0];
+      if (c) o.material.color.copy(c);
+    }
+  });
+}
+export { PALETTE };
+
+/** Statystyki per slot (powierzchnia, objętość, zakres wysokości) w układzie modelu. */
+export function slotGeomStats(parsed) {
+  const out = parsed.slots.map((s) => ({ ...s }));
+  if (parsed.isGcode) return out;
+  const need = out.some((s) => s.area == null);
+  if (!need) return out;
+  out.forEach((s) => { s.area = 0; s.vol = 0; s.paintArea = 0; s.zMin = Infinity; s.zMax = -Infinity; });
+  parsed.object.updateMatrixWorld(true);
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), ab = new THREE.Vector3(), ac = new THREE.Vector3();
+  parsed.object.traverse((m) => {
+    if (!m.isMesh) return;
+    const st = out[m.userData.slot ?? 0] || out[0];
+    const pos = m.geometry.attributes.position, idx = m.geometry.index;
+    const n = idx ? idx.count / 3 : pos.count / 3;
+    for (let i = 0; i < n; i++) {
+      a.fromBufferAttribute(pos, idx ? idx.getX(i * 3) : i * 3);
+      b.fromBufferAttribute(pos, idx ? idx.getX(i * 3 + 1) : i * 3 + 1);
+      c.fromBufferAttribute(pos, idx ? idx.getX(i * 3 + 2) : i * 3 + 2);
+      st.area += ab.subVectors(b, a).cross(ac.subVectors(c, a)).length() / 2;
+      st.vol += a.dot(b.clone().cross(c)) / 6;
+      const h = parsed.zUp ? [a.z, b.z, c.z] : [a.y, b.y, c.y];
+      st.zMin = Math.min(st.zMin, ...h); st.zMax = Math.max(st.zMax, ...h);
+    }
+  });
+  out.forEach((s) => { s.vol = Math.abs(s.vol); });
+  return out;
 }
 
 /** Miniatura osadzona w 3MF (PrusaSlicer, Bambu Studio, Orca) */
@@ -99,7 +189,7 @@ function boxOf(object) {
   return any ? box : new THREE.Box3().setFromObject(object);
 }
 
-export function computeStats(object, isGcode) {
+export function computeStats(object, isGcode, rawZUp = false) {
   const box = boxOf(object);
   const size = box.getSize(new THREE.Vector3());
   let tris = 0, vol = 0;
@@ -120,6 +210,7 @@ export function computeStats(object, isGcode) {
     });
   }
   // po obróceniu Z-up -> Y-up: X szer., Z głęb., Y wys.
+  if (rawZUp) return { x: size.x, y: size.y, z: size.z, tris: Math.round(tris), volume: Math.abs(vol) / 1000 };
   return { x: size.x, y: size.z, z: size.y, tris: Math.round(tris), volume: Math.abs(vol) / 1000 };
 }
 
@@ -158,7 +249,7 @@ function fitCamera(camera, holder, controls) {
 
 // ---------- miniatury (jeden współdzielony renderer) ----------
 let thumbR = null;
-export function renderThumbnail(parsed, size = 320) {
+export function renderThumbnail(parsed, size = 320, colors = null) {
   if (!thumbR) {
     const canvas = document.createElement('canvas');
     thumbR = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
@@ -167,6 +258,7 @@ export function renderThumbnail(parsed, size = 320) {
   thumbR.setSize(size, size, false);
   const scene = new THREE.Scene();
   addLights(scene);
+  if (colors) applySlotColors(parsed.object, colors);
   const holder = orient(parsed.object, parsed.zUp);
   scene.add(holder);
   const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 1000);
@@ -231,6 +323,7 @@ export class Viewer {
     this.setWireframe(this.wire);
     fitCamera(this.camera, this.holder, this.controls);
   }
+  setSlotColors(colors) { if (this.holder) applySlotColors(this.holder, colors); }
   setColor(hex) {
     const c = new THREE.Color(hex);
     this.holder?.traverse((o) => {
