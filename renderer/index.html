@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-ZXnmStJs/Z5QLXez0rGmMP1S6Mt++GlZfIm0+PoOsSc='">
+  <title>ModelVault</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="importmap">
+    { "imports": {
+      "three": "../node_modules/three/build/three.module.js",
+      "three/addons/": "../node_modules/three/examples/jsm/"
+    } }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo"></span>ModelVault</div>
+    <button class="libpath" id="libPath" title="Zmień folder biblioteki"><span id="libPathText">Wybierz folder…</span></button>
+    <div class="search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="search" type="search" placeholder="Szukaj po nazwie, tagu, notatce…  (Ctrl+F)" spellcheck="false">
+    </div>
+    <select id="format" title="Format">
+      <option value="all">Wszystkie formaty</option>
+      <option value="stl">STL</option><option value="3mf">3MF</option><option value="obj">OBJ</option>
+      <option value="gcode">G-code</option><option value="ply">PLY</option><option value="other">Inne (STEP, SCAD…)</option>
+    </select>
+    <select id="sort" title="Sortowanie">
+      <option value="name">Nazwa A–Z</option><option value="date">Najnowsze</option>
+      <option value="size">Największe</option><option value="ext">Format</option>
+    </select>
+    <input id="zoom" type="range" min="120" max="300" value="180" title="Rozmiar miniatur">
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <nav class="section" id="specials"></nav>
+      <div class="section-title">
+        <span>Foldery</span>
+        <button class="icon-btn" id="newFolderBtn" title="Nowy folder w zaznaczonym">+</button>
+      </div>
+      <div class="tree" id="tree"></div>
+      <div class="section-title"><span>Tagi</span></div>
+      <div class="tags-list" id="tagsList"></div>
+    </aside>
+
+    <main class="main" id="main">
+      <div class="crumbs" id="crumbs"></div>
+      <div class="grid" id="grid"></div>
+      <div class="empty" id="empty" hidden></div>
+      <div class="drop-overlay" id="dropOverlay" hidden><div>Upuść, aby skopiować do <b id="dropTarget"></b></div></div>
+    </main>
+
+    <aside class="detail" id="detail">
+      <div class="viewer-wrap">
+        <div class="viewer" id="viewer"></div>
+        <div class="viewer-msg" id="viewerMsg"></div>
+        <div class="viewer-tools" id="viewerTools">
+          <button class="icon-btn" id="vReset" title="Resetuj widok">⟲</button>
+          <button class="icon-btn" id="vWire" title="Siatka (wireframe)">▦</button>
+          <button class="icon-btn" id="vTravel" title="Ruchy jałowe (G-code)" hidden>↝</button>
+        </div>
+      </div>
+      <div class="detail-body" id="detailBody"></div>
+    </aside>
+  </div>
+
+  <div class="ctx" id="ctx" hidden></div>
+  <div class="modal-back" id="modalBack" hidden><div class="modal" id="modal"></div></div>
+  <div class="toasts" id="toasts"></div>
+  <div class="drag-ghost" id="dragGhost"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+
+async function call(name, ...args) {
+  const r = await ipcRenderer.invoke(name, ...args);
+  if (!r.ok) throw new Error(r.error);
+  return r.data;
+}
+
+contextBridge.exposeInMainWorld('api', {
+  getLibrary: () => call('lib:get'),
+  chooseLibrary: () => call('lib:choose'),
+  readFile: (rel) => call('file:read', rel),
+  readImage: (rel) => call('image:read', rel),
+  move: (rels, destDir) => call('items:move', rels, destDir),
+  rename: (rel, name) => call('item:rename', rel, name),
+  createFolder: (parent, name) => call('folder:create', parent, name),
+  trash: (rels) => call('items:trash', rels),
+  importFiles: (paths, destDir) => call('files:import', paths, destDir),
+  setMeta: (rel, patch) => call('meta:set', rel, patch),
+  open: (rel) => call('shell:open', rel),
+  reveal: (rel) => call('shell:reveal', rel),
+  openRoot: () => call('shell:openRoot'),
+  getThumb: (rel, mtime, size) => call('thumb:get', rel, mtime, size),
+  putThumb: (rel, mtime, size, url) => call('thumb:put', rel, mtime, size, url),
+  pathForFile: (file) => webUtils.getPathForFile(file),
+  onChanged: (cb) => ipcRenderer.on('lib:changed', cb),
+});
