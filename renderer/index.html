@@ -15,42 +15,42 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="logo"></span>ModelVault</div>
-    <button class="libpath" id="libPath" title="Zmień folder biblioteki"><span id="libPathText">Wybierz folder…</span></button>
+    <button class="libpath" id="libPath" title="Zmień folder biblioteki" data-i18n-title="Zmień folder biblioteki"><span id="libPathText"><span data-i18n="Wybierz folder…">Wybierz folder…</span></span></button>
     <div class="search">
       <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-      <input id="search" type="search" placeholder="Szukaj po nazwie, tagu, notatce…  (Ctrl+F)" spellcheck="false">
+      <input id="search" type="search" placeholder="Szukaj po nazwie, tagu, notatce…  (Ctrl+F)" data-i18n-placeholder="Szukaj po nazwie, tagu, notatce…  (Ctrl+F)" spellcheck="false">
     </div>
     <select id="format" title="Format">
-      <option value="all">Wszystkie formaty</option>
+      <option value="all" data-i18n="Wszystkie formaty">Wszystkie formaty</option>
       <option value="stl">STL</option><option value="3mf">3MF</option><option value="obj">OBJ</option>
-      <option value="gcode">G-code</option><option value="ply">PLY</option><option value="other">Inne (STEP, SCAD…)</option>
+      <option value="gcode">G-code</option><option value="ply">PLY</option><option value="other" data-i18n="Inne (STEP, SCAD…)">Inne (STEP, SCAD…)</option>
     </select>
-    <select id="sort" title="Sortowanie">
-      <option value="name">Nazwa A–Z</option><option value="date">Najnowsze</option>
-      <option value="size">Największe</option><option value="ext">Format</option>
+    <select id="sort" title="Sortowanie" data-i18n-title="Sortowanie">
+      <option value="name" data-i18n="Nazwa A–Z">Nazwa A–Z</option><option value="date" data-i18n="Najnowsze">Najnowsze</option>
+      <option value="size" data-i18n="Największe">Największe</option><option value="ext" data-i18n="Format">Format</option>
     </select>
-    <input id="zoom" type="range" min="120" max="300" value="180" title="Rozmiar miniatur">
-    <button class="icon-btn big" id="settingsBtn" title="Ustawienia (Ctrl+,)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+    <input id="zoom" type="range" min="120" max="300" value="180" title="Rozmiar miniatur" data-i18n-title="Rozmiar miniatur">
+    <button class="icon-btn big" id="settingsBtn" title="Ustawienia (Ctrl+,)" data-i18n-title="Ustawienia (Ctrl+,)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
   </header>
 
   <div class="layout">
     <aside class="sidebar">
       <nav class="section" id="specials"></nav>
       <div class="nav-group">
-        <div class="nav-item" id="orderNav"><span class="ico">∑</span>Wycena zamówienia<span class="count" id="orderCount">0</span></div>
-        <div class="nav-item" id="ordersNav"><span class="ico">≡</span>Zamówienia<span class="count" id="ordersCount">0</span></div>
-        <div class="nav-item" id="queueNav"><span class="ico">▤</span>Kolejka druku<span class="count" id="queueCount"></span></div>
-        <div class="nav-item" id="clientsNav"><span class="ico">☺</span>Klienci<span class="count" id="clientsCount"></span></div>
-        <div class="nav-item" id="stockNav"><span class="ico">◎</span>Magazyn filamentów<span class="count" id="stockCount"></span></div>
+        <div class="nav-item" id="orderNav"><span class="ico">∑</span><span data-i18n="Wycena zamówienia">Wycena zamówienia</span><span class="count" id="orderCount">0</span></div>
+        <div class="nav-item" id="ordersNav"><span class="ico">≡</span><span data-i18n="Zamówienia">Zamówienia</span><span class="count" id="ordersCount">0</span></div>
+        <div class="nav-item" id="queueNav"><span class="ico">▤</span><span data-i18n="Kolejka druku">Kolejka druku</span><span class="count" id="queueCount"></span></div>
+        <div class="nav-item" id="clientsNav"><span class="ico">☺</span><span data-i18n="Klienci">Klienci</span><span class="count" id="clientsCount"></span></div>
+        <div class="nav-item" id="stockNav"><span class="ico">◎</span><span data-i18n="Magazyn filamentów">Magazyn filamentów</span><span class="count" id="stockCount"></span></div>
       </div>
-      <div class="section-title"><span>Kolekcje</span><button class="icon-btn" id="newCollBtn" title="Nowa kolekcja">+</button></div>
+      <div class="section-title"><span><span data-i18n="Kolekcje">Kolekcje</span></span><button class="icon-btn" id="newCollBtn" title="Nowa kolekcja" data-i18n-title="Nowa kolekcja">+</button></div>
       <div class="colls" id="colls"></div>
       <div class="section-title">
-        <span>Foldery</span>
-        <button class="icon-btn" id="newFolderBtn" title="Nowy folder w zaznaczonym">+</button>
+        <span><span data-i18n="Foldery">Foldery</span></span>
+        <button class="icon-btn" id="newFolderBtn" title="Nowy folder w zaznaczonym" data-i18n-title="Nowy folder w zaznaczonym">+</button>
       </div>
       <div class="tree" id="tree"></div>
-      <div class="section-title"><span>Tagi</span></div>
+      <div class="section-title"><span><span data-i18n="Tagi">Tagi</span></span></div>
       <div class="tags-list" id="tagsList"></div>
     </aside>
 
@@ -63,7 +63,7 @@
       <div class="order" id="clients" hidden></div>
       <div class="order" id="queue" hidden></div>
       <div class="empty" id="empty" hidden></div>
-      <div class="drop-overlay" id="dropOverlay" hidden><div>Upuść, aby skopiować do <b id="dropTarget"></b></div></div>
+      <div class="drop-overlay" id="dropOverlay" hidden><div><span data-i18n="Upuść, aby skopiować do">Upuść, aby skopiować do</span> <b id="dropTarget"></b></div></div>
     </main>
 
     <aside class="detail" id="detail">
@@ -71,11 +71,11 @@
         <div class="viewer" id="viewer"></div>
         <div class="viewer-msg" id="viewerMsg"></div>
         <div class="viewer-tools" id="viewerTools">
-          <select id="vPlate" class="vplate" hidden title="Pokaż płytę"></select>
-          <button class="icon-btn" id="vSnap" title="Ustaw ten widok jako miniaturę">◉</button>
-          <button class="icon-btn" id="vReset" title="Resetuj widok">⟲</button>
-          <button class="icon-btn" id="vWire" title="Siatka (wireframe)">▦</button>
-          <button class="icon-btn" id="vTravel" title="Ruchy jałowe (G-code)" hidden>↝</button>
+          <select id="vPlate" class="vplate" hidden title="Pokaż płytę" data-i18n-title="Pokaż płytę"></select>
+          <button class="icon-btn" id="vSnap" title="Ustaw ten widok jako miniaturę" data-i18n-title="Ustaw ten widok jako miniaturę">◉</button>
+          <button class="icon-btn" id="vReset" title="Resetuj widok" data-i18n-title="Resetuj widok">⟲</button>
+          <button class="icon-btn" id="vWire" title="Siatka (wireframe)" data-i18n-title="Siatka (wireframe)">▦</button>
+          <button class="icon-btn" id="vTravel" title="Ruchy jałowe (G-code)" data-i18n-title="Ruchy jałowe (G-code)" hidden>↝</button>
         </div>
       </div>
       <div class="detail-body" id="detailBody"></div>

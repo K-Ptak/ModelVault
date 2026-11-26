@@ -1,8 +1,9 @@
 // Wycena wydruków – ta sama logika co w arkuszu „Druk 3D – skoroszyt wyceny”.
 import { unzipSync, strFromU8 } from 'three/addons/libs/fflate.module.js';
+import { LOCALE } from './i18n.js';
 
-export const fmtMoney = (v, cur = 'zł') => `${(Number.isFinite(v) ? v : 0).toLocaleString('pl-PL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${cur}`;
-export const fmtNum = (v, d = 2) => (Number.isFinite(v) ? v : 0).toLocaleString('pl-PL', { minimumFractionDigits: d, maximumFractionDigits: d });
+export const fmtMoney = (v, cur = 'zł') => `${(Number.isFinite(v) ? v : 0).toLocaleString(LOCALE, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${cur}`;
+export const fmtNum = (v, d = 2) => (Number.isFinite(v) ? v : 0).toLocaleString(LOCALE, { minimumFractionDigits: d, maximumFractionDigits: d });
 export function fmtDuration(min) {
   if (!Number.isFinite(min) || min <= 0) return '—';
   const m = Math.round(min), h = Math.floor(m / 60), r = m % 60;

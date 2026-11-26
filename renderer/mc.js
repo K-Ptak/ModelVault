@@ -1,6 +1,7 @@
 // Obsługa modeli wielokolorowych: 3MF (Bambu Studio / OrcaSlicer / PrusaSlicer / rdzeń 3MF),
 // G-code z wieloma narzędziami (T0..Tn) oraz OBJ z wieloma materiałami.
 import { unzipSync, strFromU8 } from 'three/addons/libs/fflate.module.js';
+import { T } from './i18n.js';
 
 export const PALETTE = ['#f2a03d', '#4a86e8', '#e9e9e4', '#d9534f', '#3f9c4f', '#8e6cd8', '#2b2d31', '#3ec7c2', '#e6c84a', '#e07ab8', '#8b5a2b', '#9aa3ad'];
 
@@ -259,7 +260,7 @@ export function parse3MFColors(buffer) {
         const mlist = pid != null ? mats.get(`${obj.path}#${pid}`) || mats.get(`${rootPath}#${pid}`) : null;
         if (mlist && pidx != null && mlist[pidx]) {
           key = `m${pid}:${pidx}`;
-          init = { ext: null, name: mlist[pidx].name || `Materiał ${pidx + 1}`, hex: mlist[pidx].hex };
+          init = { ext: null, name: mlist[pidx].name || T('Materiał {0}', { 0: pidx + 1 }), hex: mlist[pidx].hex };
         } else { key = 'e1'; init = { ext: 1, name: 'Filament 1', hex: null }; }
       }
       const s = slotFor(key, init);
@@ -308,7 +309,7 @@ export function parse3MFColors(buffer) {
 
   // filamenty zużyte tylko w podporach / wieży (bez geometrii modelu)
   if (slice) for (const [ext, info] of slice.perExt) {
-    if (info.grams > 0 && !slots.has('e' + ext)) slots.set('e' + ext, { key: 'e' + ext, ext, name: `Filament ${ext} (podpory/wieża)`, hex: info.hex || colors[ext - 1] || null, tris: 0, area: 0, vol: 0, paintArea: 0, zMin: Infinity, zMax: -Infinity, pos: new Map() });
+    if (info.grams > 0 && !slots.has('e' + ext)) slots.set('e' + ext, { key: 'e' + ext, ext, name: T('Filament {0} (podpory/wieża)', { 0: ext }), hex: info.hex || colors[ext - 1] || null, tris: 0, area: 0, vol: 0, paintArea: 0, zMin: Infinity, zMax: -Infinity, pos: new Map() });
   }
   const list = [...slots.values()].sort((a, b) => (a.ext ?? 999) - (b.ext ?? 999) || a.key.localeCompare(b.key));
   const usedPlates = [...new Set(list.flatMap((s) => [...s.pos.keys()]))].sort((a, b) => a - b);

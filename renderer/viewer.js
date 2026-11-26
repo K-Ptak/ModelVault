@@ -7,6 +7,7 @@ import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { unzipSync } from 'three/addons/libs/fflate.module.js';
 import { parse3MFColors, parseGcodePaths, gcodeColorInfo, PALETTE } from './mc.js';
 import { detectPlates } from './plates.js';
+import { T } from './i18n.js';
 
 let MODEL_COLOR = 0xf2a03d;
 export function setModelColor(hex) { MODEL_COLOR = new THREE.Color(hex).getHex(); }
@@ -55,7 +56,7 @@ function splitObjMaterials(obj) {
       out.add(meshPerSlot(slot, arr));
     }
   });
-  return { object: out, slots: names.map((n, i) => ({ key: 'o' + i, ext: null, name: n || `Materiał ${i + 1}`, hex: null })) };
+  return { object: out, slots: names.map((n, i) => ({ key: 'o' + i, ext: null, name: n || T('Materiał {0}', { 0: i + 1 }), hex: null })) };
 }
 
 /** Zwraca { object, zUp, isGcode, slots:[{name, hex, ...}], info } */
@@ -88,7 +89,7 @@ export function parseModel(ext, buffer) {
       const obj = new ThreeMFLoader().parse(buffer);
       let meshes = 0;
       obj.traverse((c) => { if (c.isMesh) meshes++; });
-      if (!meshes) throw new Error('Plik 3MF nie zawiera siatki, którą da się odczytać');
+      if (!meshes) throw new Error(T('Plik 3MF nie zawiera siatki, którą da się odczytać'));
       restyle(obj);
       return { object: obj, zUp: true, slots: [{ key: 's0', name: '', hex: null }] };
     }
@@ -113,11 +114,11 @@ export function parseModel(ext, buffer) {
         ls.userData.travel = true; ls.visible = false;
         g.add(ls);
       }
-      if (!paths.tools.size) throw new Error('Nie znaleziono ścieżek druku w G-code');
+      if (!paths.tools.size) throw new Error(T('Nie znaleziono ścieżek druku w G-code'));
       return { object: g, zUp: true, isGcode: true, slots: ci.slots, info: { toolChanges: ci.toolChanges, perSlotGrams: ci.perSlotGrams } };
     }
     default:
-      throw new Error('Brak podglądu dla tego formatu');
+      throw new Error(T('Brak podglądu dla tego formatu'));
   }
 }
 

@@ -25,6 +25,47 @@ let meta = { version: 1, files: {} };
 let watcher = null;
 let selfWriteUntil = 0;
 
+// ---------- tłumaczenia komunikatów procesu głównego ----------
+const MT = {
+  en: {
+    'Ścieżka poza biblioteką': 'Path is outside the library',
+    'Wybierz folder z modelami 3D': 'Choose the folder with your 3D models',
+    'Nie można przenieść folderu do niego samego': 'A folder cannot be moved into itself',
+    'Niedozwolona nazwa': 'Invalid name',
+    'Element o tej nazwie już istnieje': 'An item with this name already exists',
+    'Folder już istnieje': 'Folder already exists',
+    'Nie można usunąć całej biblioteki': 'The whole library cannot be deleted',
+    'Obsługiwane są tylko linki http(s)': 'Only http(s) links are supported',
+    'Wybierz zdjęcie / obrazek miniatury': 'Choose a photo / thumbnail image',
+    'Obrazy': 'Images',
+    'To nie jest kopia ModelVault': 'This is not a ModelVault backup',
+    'Kopia ModelVault': 'ModelVault backup',
+    'kopia': 'backup',
+    'Wskaż plik programu slicera': 'Select the slicer executable',
+    'Program': 'Program',
+    'Nie znaleziono programu: ': 'Program not found: ',
+  },
+  de: {
+    'Ścieżka poza biblioteką': 'Pfad liegt außerhalb der Bibliothek',
+    'Wybierz folder z modelami 3D': 'Ordner mit 3D-Modellen auswählen',
+    'Nie można przenieść folderu do niego samego': 'Ein Ordner kann nicht in sich selbst verschoben werden',
+    'Niedozwolona nazwa': 'Ungültiger Name',
+    'Element o tej nazwie już istnieje': 'Ein Element mit diesem Namen existiert bereits',
+    'Folder już istnieje': 'Ordner existiert bereits',
+    'Nie można usunąć całej biblioteki': 'Die gesamte Bibliothek kann nicht gelöscht werden',
+    'Obsługiwane są tylko linki http(s)': 'Nur http(s)-Links werden unterstützt',
+    'Wybierz zdjęcie / obrazek miniatury': 'Foto / Vorschaubild auswählen',
+    'Obrazy': 'Bilder',
+    'To nie jest kopia ModelVault': 'Dies ist keine ModelVault-Sicherung',
+    'Kopia ModelVault': 'ModelVault-Sicherung',
+    'kopia': 'Sicherung',
+    'Wskaż plik programu slicera': 'Slicer-Programmdatei auswählen',
+    'Program': 'Programm',
+    'Nie znaleziono programu: ': 'Programm nicht gefunden: ',
+  },
+};
+const mt = (k) => { const l = settings && settings.language; return (MT[l] && MT[l][k]) || k; };
+
 const configPath = () => path.join(app.getPath('userData'), 'config.json');
 const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
 
@@ -129,7 +170,7 @@ const toRel = (abs) => path.relative(root, abs).split(path.sep).join('/');
 function toAbs(rel) {
   const abs = path.resolve(root, ...String(rel || '').split('/').filter(Boolean));
   const r = path.relative(root, abs);
-  if (r.startsWith('..') || path.isAbsolute(r)) throw new Error('Ścieżka poza biblioteką');
+  if (r.startsWith('..') || path.isAbsolute(r)) throw new Error(mt('Ścieżka poza biblioteką'));
   return abs;
 }
 const extOf = (n) => path.extname(n).slice(1).toLowerCase();
@@ -284,7 +325,7 @@ function handle(name, fn) {
 
 handle('lib:get', async () => scan());
 handle('lib:choose', async () => {
-  const r = await dialog.showOpenDialog(win, { title: 'Wybierz folder z modelami 3D', properties: ['openDirectory', 'createDirectory'] });
+  const r = await dialog.showOpenDialog(win, { title: mt('Wybierz folder z modelami 3D'), properties: ['openDirectory', 'createDirectory'] });
   if (r.canceled || !r.filePaths[0]) return null;
   await setRoot(r.filePaths[0]);
   return scan();
@@ -302,7 +343,7 @@ handle('items:move', async (rels, destDirRel) => {
     const src = toAbs(rel);
     const st = await fsp.stat(src);
     const isDir = st.isDirectory();
-    if (isDir && (destAbs + path.sep).startsWith(src + path.sep)) throw new Error('Nie można przenieść folderu do niego samego');
+    if (isDir && (destAbs + path.sep).startsWith(src + path.sep)) throw new Error(mt('Nie można przenieść folderu do niego samego'));
     if (path.dirname(src) === destAbs) continue;
     const dst = await uniquePath(path.join(destAbs, path.basename(src)));
     await moveFs(src, dst);
@@ -326,12 +367,12 @@ handle('items:move', async (rels, destDirRel) => {
 
 handle('item:rename', async (rel, newName) => {
   newName = String(newName).trim();
-  if (!newName || /[\\/:*?"<>|]/.test(newName)) throw new Error('Niedozwolona nazwa');
+  if (!newName || /[\\/:*?"<>|]/.test(newName)) throw new Error(mt('Niedozwolona nazwa'));
   const src = toAbs(rel);
   const st = await fsp.stat(src);
   const dst = path.join(path.dirname(src), newName);
   if (dst === src) return rel;
-  if (await exists(dst) && dst.toLowerCase() !== src.toLowerCase()) throw new Error('Element o tej nazwie już istnieje');
+  if (await exists(dst) && dst.toLowerCase() !== src.toLowerCase()) throw new Error(mt('Element o tej nazwie już istnieje'));
   await fsp.rename(src, dst);
   remapMeta(rel, toRel(dst), st.isDirectory());
   await saveMetaNow();
@@ -340,9 +381,9 @@ handle('item:rename', async (rel, newName) => {
 
 handle('folder:create', async (parentRel, name) => {
   name = String(name).trim();
-  if (!name || /[\\/:*?"<>|]/.test(name)) throw new Error('Niedozwolona nazwa');
+  if (!name || /[\\/:*?"<>|]/.test(name)) throw new Error(mt('Niedozwolona nazwa'));
   const p = toAbs(parentRel ? `${parentRel}/${name}` : name);
-  if (await exists(p)) throw new Error('Folder już istnieje');
+  if (await exists(p)) throw new Error(mt('Folder już istnieje'));
   await fsp.mkdir(p, { recursive: true });
   return toRel(p);
 });
@@ -350,7 +391,7 @@ handle('folder:create', async (parentRel, name) => {
 handle('items:trash', async (rels) => {
   for (const rel of rels) {
     const abs = toAbs(rel);
-    if (abs === root) throw new Error('Nie można usunąć całej biblioteki');
+    if (abs === root) throw new Error(mt('Nie można usunąć całej biblioteki'));
     await shell.trashItem(abs);
     for (const k of Object.keys(meta.files)) if (k === rel || k.startsWith(rel + '/')) delete meta.files[k];
   }
@@ -415,7 +456,7 @@ handle('files:hash', async (rels) => {
   return out;
 });
 handle('shell:external', async (url) => {
-  if (!/^https?:\/\//i.test(String(url))) throw new Error('Obsługiwane są tylko linki http(s)');
+  if (!/^https?:\/\//i.test(String(url))) throw new Error(mt('Obsługiwane są tylko linki http(s)'));
   await shell.openExternal(String(url));
   return true;
 });
@@ -443,7 +484,7 @@ handle('image:read', async (rel) => {
 });
 
 handle('image:pickFor', async (rel) => {
-  const r = await dialog.showOpenDialog(win, { title: 'Wybierz zdjęcie / obrazek miniatury', properties: ['openFile'], filters: [{ name: 'Obrazy', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
+  const r = await dialog.showOpenDialog(win, { title: mt('Wybierz zdjęcie / obrazek miniatury'), properties: ['openFile'], filters: [{ name: mt('Obrazy'), extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
   if (r.canceled || !r.filePaths[0]) return null;
   const src = r.filePaths[0];
   const model = toAbs(rel);
@@ -475,7 +516,7 @@ async function maybeAutoBackup() {
   if (Date.now() - (settings.backup.last || 0) > 20 * 3600 * 1000) { try { await createBackup('auto'); } catch (e) { console.warn('backup', e); } }
 }
 function applyBackupData(data, withLibrary) {
-  if (!data || data.app !== 'ModelVault' || !data.settings) throw new Error('To nie jest kopia ModelVault');
+  if (!data || data.app !== 'ModelVault' || !data.settings) throw new Error(mt('To nie jest kopia ModelVault'));
   const keepSlicers = settings.slicers;
   settings = data.settings; loadSettingsFromObject();
   if (!settings.slicers || !settings.slicers.list) settings.slicers = keepSlicers;
@@ -496,13 +537,13 @@ handle('backup:restore', async (name, withLibrary) => {
   return settings;
 });
 handle('backup:export', async () => {
-  const r = await dialog.showSaveDialog(win, { defaultPath: `ModelVault-kopia-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: 'Kopia ModelVault', extensions: ['json'] }] });
+  const r = await dialog.showSaveDialog(win, { defaultPath: `ModelVault-${mt('kopia')}-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: mt('Kopia ModelVault'), extensions: ['json'] }] });
   if (r.canceled || !r.filePath) return null;
   await fsp.writeFile(r.filePath, JSON.stringify({ app: 'ModelVault', kind: 'export', version: app.getVersion(), createdAt: Date.now(), settings, library: root ? { root, meta } : null }, null, 1));
   return r.filePath;
 });
 handle('backup:import', async (withLibrary) => {
-  const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: 'Kopia ModelVault', extensions: ['json'] }] });
+  const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: mt('Kopia ModelVault'), extensions: ['json'] }] });
   if (r.canceled || !r.filePaths[0]) return null;
   const data = JSON.parse(await fsp.readFile(r.filePaths[0], 'utf8'));
   await createBackup('przed importem');
@@ -574,13 +615,13 @@ async function mergeDetected() {
 }
 handle('slicers:detect', async () => mergeDetected());
 handle('slicers:pick', async () => {
-  const r = await dialog.showOpenDialog(win, { title: 'Wskaż plik programu slicera', properties: ['openFile'], filters: process.platform === 'win32' ? [{ name: 'Program', extensions: ['exe'] }] : [] });
+  const r = await dialog.showOpenDialog(win, { title: mt('Wskaż plik programu slicera'), properties: ['openFile'], filters: process.platform === 'win32' ? [{ name: mt('Program'), extensions: ['exe'] }] : [] });
   return r.canceled ? null : r.filePaths[0];
 });
 handle('slicers:open', async (slicerPath, rels) => {
   const files = rels.map(toAbs);
   if (!slicerPath || slicerPath === 'system') { for (const f of files) { const e = await shell.openPath(f); if (e) throw new Error(e); } return true; }
-  if (!(await exists(slicerPath))) throw new Error('Nie znaleziono programu: ' + slicerPath);
+  if (!(await exists(slicerPath))) throw new Error(mt('Nie znaleziono programu: ') + slicerPath);
   const child = process.platform === 'darwin' && slicerPath.endsWith('.app')
     ? spawn('open', ['-a', slicerPath, ...files], { detached: true, stdio: 'ignore' })
     : spawn(slicerPath, files, { detached: true, stdio: 'ignore', cwd: path.dirname(slicerPath) });
@@ -777,7 +818,11 @@ if (process.env.MV_USERDATA) app.setPath('userData', process.env.MV_USERDATA);
 
 // programowy WebGL, gdy GPU jest niedostępne (VM, stare sterowniki)
 app.commandLine.appendSwitch('enable-unsafe-swiftshader');
-app.commandLine.appendSwitch('lang', 'pl');
+try {
+  const pre = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8'));
+  const map = { pl: 'pl', en: 'en-GB', de: 'de' };
+  if (pre && map[pre.language]) app.commandLine.appendSwitch('lang', map[pre.language]);
+} catch { /* pierwszy start – język systemu */ }
 
 app.whenReady().then(async () => {
   loadConfig();

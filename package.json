@@ -2,7 +2,7 @@
   "name": "modelvault",
   "productName": "ModelVault",
   "version": "1.0.0",
-  "description": "Menedżer biblioteki modeli 3D z wyceną wydruków (STL, 3MF, OBJ, G-code)",
+  "description": "3D printing model library manager with print pricing (STL, 3MF, OBJ, G-code)",
   "main": "main.js",
   "author": {
     "name": "K-Ptak"
@@ -10,7 +10,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/core.test.mjs",
+    "test": "node --test \"test/*.test.mjs\"",
     "dist": "electron-builder --win",
     "release": "electron-builder --win --publish always",
     "postinstall": "node scripts/vendor.js"

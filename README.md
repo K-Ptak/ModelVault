@@ -4,209 +4,222 @@
 
 # ModelVault
 
-**Desktopowy menedżer biblioteki modeli do druku 3D: z podglądem, wyceną, zamówieniami i magazynem filamentów.**
+**A desktop library manager for 3D printing models, with 3D preview, print pricing, orders and filament stock.**
 
-[![Testy](https://github.com/K-Ptak/ModelVault/actions/workflows/ci.yml/badge.svg)](https://github.com/K-Ptak/ModelVault/actions/workflows/ci.yml)
-![Wersja](https://img.shields.io/badge/wersja-1.0.0-f2a03d)
-![Status](https://img.shields.io/badge/status-w%20rozwoju-6aa7ff)
-[![Licencja: MIT](https://img.shields.io/badge/licencja-MIT-5ec48a)](LICENSE)
-![Platforma](https://img.shields.io/badge/platforma-Windows-0078d4)
+[![Tests](https://github.com/K-Ptak/ModelVault/actions/workflows/ci.yml/badge.svg)](https://github.com/K-Ptak/ModelVault/actions/workflows/ci.yml)
+![Version](https://img.shields.io/badge/version-1.0.0-f2a03d)
+![Status](https://img.shields.io/badge/status-in%20development-6aa7ff)
+[![License: MIT](https://img.shields.io/badge/license-MIT-5ec48a)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows-0078d4)
+![Languages](https://img.shields.io/badge/languages-EN%20%C2%B7%20PL%20%C2%B7%20DE-9b7bea)
 ![Electron](https://img.shields.io/badge/Electron-45-47848f?logo=electron&logoColor=white)
 ![three.js](https://img.shields.io/badge/three.js-r187-000000?logo=three.js&logoColor=white)
 
-<img src="docs/screenshots/biblioteka.png" alt="Biblioteka modeli z podglądem 3D i wyceną modelu wielokolorowego" width="100%">
+<img src="docs/screenshots/library.png" alt="Model library with a 3D preview and pricing for a multicolour model" width="100%">
 
 </div>
 
 ---
 
-ModelVault zamienia zwykły folder z plikami STL, 3MF i G-code w uporządkowaną bibliotekę.
-Daje podgląd 3D, kategorie i tagi oraz wycenę każdego wydruku: z kosztem filamentu, prądu,
-eksploatacji drukarki i Twojej pracy. **Pliki zostają tam, gdzie są.** Foldery to kategorie,
-więc wszystko nadal działa w Eksploratorze, a aplikacja wykrywa zmiany na bieżąco.
+ModelVault turns an ordinary folder of STL, 3MF and G-code files into an organised library.
+You get a 3D preview, categories and tags, and a price for every print that covers filament,
+electricity, printer wear and your own time. **Your files stay where they are.** Folders are categories,
+so everything keeps working in File Explorer, and the app picks up changes as they happen.
 
-> **Status:** wersja 1.0 jest w aktywnym rozwoju, przed pierwszym wydaniem.
+> **Status:** version 1.0 is in active development and has not been released yet.
 
-## Spis treści
-- [Funkcje](#funkcje)
-- [Zrzuty ekranu](#zrzuty-ekranu)
-- [Obsługiwane formaty](#obsługiwane-formaty)
-- [Jak liczona jest wycena](#jak-liczona-jest-wycena)
-- [Instalacja](#instalacja)
-- [Jak to działa](#jak-to-działa)
-- [Rozwój](#rozwój)
-- [Licencja](#licencja)
+## Contents
+- [Features](#features)
+- [Screenshots](#screenshots)
+- [Supported formats](#supported-formats)
+- [How pricing works](#how-pricing-works)
+- [Installation](#installation)
+- [How it works](#how-it-works)
+- [Development](#development)
+- [License](#license)
 
-## Funkcje
+## Features
 
-### 📁 Biblioteka
-- **Folder jako biblioteka:** podfoldery to kategorie. Przenoszenie przez przeciąganie działa na prawdziwych plikach.
-- **Tagi, ulubione, statusy** („do wydruku”, „wydrukowane”), notatki i link do źródła (Printables, MakerWorld, Thingiverse).
-- **Kolekcje:** wirtualne grupy, np. „Prezenty na święta”, bez przenoszenia plików.
-- **Wyszukiwanie** po nazwie, ścieżce, tagach i notatkach. Filtr formatów i sortowanie.
-- **Wykrywanie duplikatów:** pliki o identycznej zawartości, nawet pod różnymi nazwami.
-- **Skrzynka „Do posortowania”:** nowe modele z folderu Pobrane trafiają do biblioteki. Archiwa ZIP są rozpakowywane automatycznie.
+### 📁 Library
+- **A folder is your library.** Subfolders are categories, and drag-and-drop moves the real files.
+- **Tags, favourites and statuses** ("to print", "printed"), plus notes and a source link (Printables, MakerWorld, Thingiverse).
+- **Collections:** virtual groups such as "Christmas gifts" that don't move any files.
+- **Search** by name, path, tags and notes, with a format filter and sorting.
+- **Duplicate detection:** finds files with identical content, even when their names differ.
+- **"To sort" inbox:** new models from your Downloads folder land in the library, and ZIP archives are extracted automatically.
 
-### 🧊 Podgląd 3D
-- **Podgląd na żywo** z obracaniem, siatką stołu, trybem wireframe i ścieżkami druku z G-code.
-- **Miniatury:** osadzone przez slicer, z obrazka obok modelu albo renderowane. Kąt kamery i zdjęcie gotowego wydruku ustawiasz sam.
-- **Modele wielokolorowe:** odczyt przypisań filamentów i malowania z plików 3MF (Bambu Studio, OrcaSlicer, PrusaSlicer) oraz narzędzi T0…Tn z G-code. Każdy kolor jest pokazany osobno.
-- **Wiele płyt w jednym pliku:** wykrywanie płyt w eksportach z Bambu Studio / MakerWorld, podgląd pojedynczej płyty i wymiary każdej z nich.
+### 🧊 3D preview
+- **Live preview** with orbit controls, a print bed grid, wireframe mode and G-code toolpaths.
+- **Thumbnails:** embedded by the slicer, taken from an image next to the model, or rendered. You can set the camera angle or use a photo of the finished print.
+- **Multicolour models:** reads filament assignments and painting from 3MF files (Bambu Studio, OrcaSlicer, PrusaSlicer) and T0…Tn tools from G-code. Each colour is shown separately.
+- **Multiple plates in one file:** detects plates in Bambu Studio / MakerWorld exports, previews a single plate and shows each plate's dimensions.
 
-### 💰 Wycena
-- **Pełny koszt wydruku:** filament, prąd (z energią na start), amortyzacja i serwis drukarki, Twój czas, bufor na nieudane wydruki, marża i zaokrąglanie ceny.
-- **Dane ze slicera:** gramy i czas z G-code (PrusaSlicer, OrcaSlicer, Bambu Studio, Cura) oraz z pociętych 3MF, osobno dla każdego filamentu, razem z purge. Bez danych ze slicera: szacunek z objętości modelu.
-- **Wiele szpul na jeden model:** szpula dla każdego koloru, automatycznie dopasowana po kolorze z pliku. Szacunek liczby zmian koloru, purge i czasu zmian.
-- **Wycena zamówienia** z wielu modeli i pozycji ręcznych. Eksport do CSV i kopiowanie podsumowania.
+### 💰 Pricing
+- **The full cost of a print:** filament, electricity (including warm-up energy), printer depreciation and servicing, your time, a buffer for failed prints, margin and price rounding.
+- **Slicer data:** grams and time from G-code (PrusaSlicer, OrcaSlicer, Bambu Studio, Cura) and from sliced 3MF files, per filament and including purge. Without slicer data, an estimate is made from the model's volume.
+- **Several spools per model:** one spool per colour, matched automatically to the colours in the file. Colour changes, purge and change time are estimated.
+- **Order quotes** combining many models and manual items, with CSV export and a copyable summary.
 
-### 📦 Zamówienia, klienci i magazyn
-- **Historia zamówień:** numeracja, statusy (wycenione → w druku → wydane), cena uzgodniona z klientem i notatki.
-- **Baza klientów** z liczbą zamówień, przychodem i zyskiem.
-- **Oferta PDF:** dokument z miniaturami, materiałami i cenami pozycji, gotowy do wysłania klientowi.
-- **Kolejka druku:** harmonogram zamówień z przewidywanym końcem, z uwzględnieniem liczby drukarek i godzin pracy, oraz wykres Gantta i kontrola terminów.
-- **Statystyki:** przychód, koszt i zysk z 12 miesięcy, zysk według kategorii i zużycie filamentów.
-- **Magazyn filamentów:** stan szpul, wartość filamentu na stanie, ostrzeżenia o kończących się szpulach i automatyczne odejmowanie zużycia z możliwością cofnięcia.
+### 📦 Orders, clients and stock
+- **Order history:** numbering, statuses (quoted → printing → delivered), the price agreed with the client, and notes.
+- **Client list** with order count, revenue and profit for each client.
+- **PDF quote:** a document with thumbnails, materials and item prices, ready to send to a client.
+- **Print queue:** a schedule of orders with estimated finish times based on your number of printers and working hours, plus a Gantt chart and deadline tracking.
+- **Statistics:** revenue, cost and profit over 12 months, profit by category, and filament usage.
+- **Filament stock:** spool levels, the value of filament in stock, low-spool warnings, and automatic deduction of usage that you can undo.
 
-### ⚙️ Wygoda
-- **Kreator pierwszego uruchomienia:** folder, slicer, drukarka, ceny i marża z przykładową wyceną na żywo.
-- **Integracja ze slicerami:** wykrywa zainstalowane slicery i otwiera model w wybranym jednym kliknięciem. Pokazuje tylko te, które masz.
-- **Kopie zapasowe:** automatyczna dzienna kopia oraz eksport i import ustawień, zamówień, klientów i metadanych biblioteki.
+### ⚙️ Convenience
+- **First-run wizard:** set up your folder, slicer, printer, prices and margin, with an example quote that updates live.
+- **Slicer integration:** detects installed slicers and opens a model in your chosen one with a single click. Only slicers you actually have are shown.
+- **Backups:** an automatic daily backup, plus export and import of settings, orders, clients and library metadata.
+- **Languages:** English, Polish and German. The language is picked from your system and can be changed in the wizard or in Settings → Appearance.
 
-## Zrzuty ekranu
+## Screenshots
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/wycena.png" alt="Wycena zamówienia"><p align="center"><sub><b>Wycena zamówienia</b>: wiele modeli, wiele szpul, ostrzeżenia z magazynu</sub></p></td>
-    <td width="50%"><img src="docs/screenshots/plyty.png" alt="Wiele płyt w jednym pliku"><p align="center"><sub><b>Wiele płyt w jednym STL</b>: każda płyta to osobny wydruk</sub></p></td>
+    <td width="50%"><img src="docs/screenshots/quote.png" alt="Order quote"><p align="center"><sub><b>Order quote</b>: many models, many spools, stock warnings</sub></p></td>
+    <td width="50%"><img src="docs/screenshots/plates.png" alt="Multiple plates in one file"><p align="center"><sub><b>Multiple plates in one STL</b>: each plate is priced as a separate print</sub></p></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/zamowienia.png" alt="Zamówienia i statystyki"><p align="center"><sub><b>Zamówienia i statystyki</b>: przychód, koszt, zysk</sub></p></td>
-    <td><img src="docs/screenshots/magazyn.png" alt="Magazyn filamentów"><p align="center"><sub><b>Magazyn filamentów</b>: stan szpul i historia zużycia</sub></p></td>
+    <td><img src="docs/screenshots/orders.png" alt="Orders and statistics"><p align="center"><sub><b>Orders and statistics</b>: revenue, cost, profit</sub></p></td>
+    <td><img src="docs/screenshots/stock.png" alt="Filament stock"><p align="center"><sub><b>Filament stock</b>: spool levels and usage history</sub></p></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/kolejka.png" alt="Kolejka druku"><p align="center"><sub><b>Kolejka druku</b>: harmonogram i terminy</sub></p></td>
-    <td><img src="docs/screenshots/kreator.png" alt="Kreator konfiguracji"><p align="center"><sub><b>Kreator konfiguracji</b>: wycena przeliczana na żywo</sub></p></td>
+    <td><img src="docs/screenshots/queue.png" alt="Print queue"><p align="center"><sub><b>Print queue</b>: schedule and deadlines</sub></p></td>
+    <td><img src="docs/screenshots/wizard.png" alt="Setup wizard"><p align="center"><sub><b>Setup wizard</b>: the example quote updates live</sub></p></td>
   </tr>
 </table>
 
 <details>
-<summary><b>Przykładowa oferta PDF</b></summary>
+<summary><b>Sample PDF quote</b></summary>
 <br>
-<img src="docs/screenshots/oferta.png" alt="Oferta PDF" width="520">
+<img src="docs/screenshots/offer.png" alt="PDF quote" width="520">
 </details>
 
-## Obsługiwane formaty
+## Supported formats
 
-| Format | Podgląd 3D | Kolory | Płyty | Dane do wyceny |
+| Format | 3D preview | Colours | Plates | Pricing data |
 |---|:---:|:---:|:---:|---|
-| **3MF** (Bambu Studio, OrcaSlicer) | ✅ | ✅ części, malowanie | ✅ z pliku | gramy per filament i czas (pocięty projekt) |
-| **3MF** (PrusaSlicer) | ✅ | ✅ części, malowanie MMU | | szacunek |
-| **3MF** (rdzeń, np. Fusion 360) | ✅ | ✅ materiały | ✅ wykrywane | szacunek |
-| **G-code** | ✅ ścieżki | ✅ narzędzia T0…Tn | | gramy per filament, czas, zmiany koloru |
-| **STL** | ✅ | | ✅ wykrywane | szacunek z objętości |
-| **OBJ** | ✅ | ✅ materiały (`usemtl`) | ✅ wykrywane | szacunek z objętości |
-| **PLY** | ✅ | ✅ kolory wierzchołków | | szacunek z objętości |
-| STEP, SCAD, F3D, BLEND, AMF, GLB… | — | | | na liście, z tagami i notatkami |
+| **3MF** (Bambu Studio, OrcaSlicer) | ✅ | ✅ parts, painting | ✅ from the file | grams per filament and time (sliced project) |
+| **3MF** (PrusaSlicer) | ✅ | ✅ parts, MMU painting | | estimate |
+| **3MF** (core, e.g. Fusion 360) | ✅ | ✅ materials | ✅ detected | estimate |
+| **G-code** | ✅ toolpaths | ✅ tools T0…Tn | | grams per filament, time, colour changes |
+| **STL** | ✅ | | ✅ detected | estimate from volume |
+| **OBJ** | ✅ | ✅ materials (`usemtl`) | ✅ detected | estimate from volume |
+| **PLY** | ✅ | ✅ vertex colours | | estimate from volume |
+| STEP, SCAD, F3D, BLEND, AMF, GLB… | — | | | listed, with tags and notes |
 
-## Jak liczona jest wycena
+## How pricing works
 
-| Składnik | Wzór |
+| Component | Formula |
 |---|---|
-| Filament | gramy ÷ 1000 × cena za kg (osobno dla każdej szpuli) |
-| Prąd | (czas druku × moc drukarki + liczba wydruków × energia na start) × cena kWh |
-| Drukarka | czas druku × (cena drukarki ÷ żywotność + serwis za godzinę) |
-| Twój czas | (liczba wydruków × czas na wydruk + czas na zamówienie) × stawka |
-| Bufor | (filament + prąd + drukarka) × % na nieudane wydruki |
-| **Koszt** | suma powyższych |
-| **Cena dla klienta** | koszt × (1 + marża), opcjonalnie zaokrąglona w górę |
+| Filament | grams ÷ 1000 × price per kg (separately for each spool) |
+| Electricity | (print time × printer power + number of prints × warm-up energy) × price per kWh |
+| Printer | print time × (printer price ÷ lifetime + servicing per hour) |
+| Your time | (number of prints × time per print + time per order) × hourly rate |
+| Buffer | (filament + electricity + printer) × failed-print percentage |
+| **Cost** | sum of the above |
+| **Client price** | cost × (1 + margin), optionally rounded up |
 
-Każda płyta w pliku wielopłytowym liczy się jako osobny wydruk. Wszystkie parametry zmienisz w ustawieniach.
+Each plate in a multi-plate file counts as a separate print. Every parameter can be changed in Settings, and the currency is up to you.
 
-## Instalacja
+## Installation
 
-> Pierwsze wydanie jest w przygotowaniu. Po publikacji instalator i wersja przenośna pojawią się
-> w zakładce [Releases](https://github.com/K-Ptak/ModelVault/releases).
+> The first release is being prepared. Once it is published, the installer and the portable version will appear
+> under [Releases](https://github.com/K-Ptak/ModelVault/releases).
 
-Planowane pliki wydania:
-- **`ModelVault-Setup-x.y.z.exe`**: instalator ze skrótem w menu Start i automatycznymi aktualizacjami,
-- **`ModelVault-x.y.z-win-x64.zip`**: wersja przenośna, bez instalacji.
+Planned release files:
+- **`ModelVault-Setup-x.y.z.exe`**: an installer with a Start menu shortcut and automatic updates.
+- **`ModelVault-x.y.z-win-x64.zip`**: a portable version that needs no installation.
 
-Do tego czasu możesz uruchomić aplikację ze źródeł (patrz [Rozwój](#rozwój)).
+Until then you can run the app from source (see [Development](#development)).
 
-## Jak to działa
+## How it works
 
-- **Twoje pliki nie są przerabiane.** Biblioteka to folder na dysku, a operacje takie jak przenoszenie,
-  zmiana nazwy czy usuwanie (do Kosza) działają na prawdziwych plikach.
-- **Metadane biblioteki** (tagi, notatki, statusy, kolekcje, przypisane szpule) są w pliku `.modelvault.json`
-  w głównym folderze biblioteki, więc przenoszą się razem z nią: na pendrive, OneDrive czy NAS.
-  Jeśli przeniesiesz plik w Eksploratorze, metadane odnajdą go po nazwie i rozmiarze.
-- **Ustawienia aplikacji** (filamenty, magazyn, klienci, zamówienia) są w `%APPDATA%\ModelVault`,
-  razem z codziennymi kopiami zapasowymi.
+- **Your files are never converted.** The library is a folder on disk, and actions such as moving,
+  renaming or deleting (to the Recycle Bin) work on the real files.
+- **Library metadata** (tags, notes, statuses, collections, assigned spools) is stored in `.modelvault.json`
+  in the library's root folder, so it travels with the library: to a USB stick, OneDrive or a NAS.
+  If you move a file in File Explorer, its metadata is matched again by name and size.
+- **App settings** (filaments, stock, clients, orders) are stored in `%APPDATA%\ModelVault`,
+  together with the daily backups.
 
 <details>
-<summary><b>Skróty klawiszowe</b></summary>
+<summary><b>Keyboard shortcuts</b></summary>
 
-| Skrót | Akcja |
+| Shortcut | Action |
 |---|---|
-| Klik / Ctrl+klik / Shift+klik | zaznacz / dodaj do zaznaczenia / zakres |
-| Strzałki | poruszanie po siatce |
-| Dwuklik / Enter | otwórz w domyślnym slicerze |
-| F2 | zmień nazwę |
-| Del | przenieś do Kosza |
-| F | ulubione |
-| Ctrl+F | szukaj |
-| Ctrl+A | zaznacz wszystko |
-| Ctrl+, | ustawienia |
-| Prawy przycisk | menu kontekstowe |
+| Click / Ctrl+click / Shift+click | select / add to selection / select range |
+| Arrow keys | move around the grid |
+| Double-click / Enter | open in the default slicer |
+| F2 | rename |
+| Del | move to the Recycle Bin |
+| F | favourite |
+| Ctrl+F | search |
+| Ctrl+A | select all |
+| Ctrl+, | settings |
+| Right-click | context menu |
 
 </details>
 
-## Rozwój
+## Development
 
-**Wymagania:** Node.js 22+, Windows (do budowania instalatora).
+**Requirements:** Node.js 22+, plus Windows for building the installer.
 
 ```bash
 git clone https://github.com/K-Ptak/ModelVault.git
 cd ModelVault
-npm install      # zależności + kopiowanie potrzebnych modułów three.js do renderer/vendor
-npm start        # uruchomienie aplikacji
-npm test         # testy logiki: wycena, pliki wielokolorowe, wykrywanie płyt
-npm run dist     # lokalny build instalatora i wersji ZIP (folder dist/)
+npm install      # dependencies + copies the required three.js modules to renderer/vendor
+npm start        # run the app
+npm test         # logic tests: pricing, multicolour files, plate detection, translations
+npm run dist     # build the installer and ZIP locally (dist/ folder)
 ```
 
-Testy na własnych plikach: `MV_REAL_DIR=ścieżka/do/folderu npm test`.
+To run the tests against your own files: `MV_REAL_DIR=path/to/folder npm test`.
 
-### Struktura projektu
+### Translations
+
+UI text is written in Polish in the source and wrapped in `T('…')`. That Polish text is the key into
+`renderer/locales/en.js` and `renderer/locales/de.js`. To add a language:
+1. Copy `en.js` to a new file such as `fr.js` and translate the values. Keep `{0}`, `{1}`… placeholders.
+2. Register it in `renderer/i18n.js` (`LANGS`, `DICTS`, `LOCALES`).
+
+`npm test` fails if any key is missing or a placeholder doesn't match.
+
+### Project structure
 
 ```
-├── main.js               # proces główny: system plików, metadane, slicery, kopie, aktualizacje, PDF
-├── preload.js            # bezpieczny most IPC między oknem a procesem głównym
+├── main.js               # main process: file system, metadata, slicers, backups, updates, PDF
+├── preload.js            # secure IPC bridge between the window and the main process
 ├── renderer/
-│   ├── index.html        # interfejs
-│   ├── app.js            # logika interfejsu: biblioteka, wycena, zamówienia, magazyn, kreator
-│   ├── viewer.js         # podgląd 3D i miniatury (three.js)
-│   ├── mc.js             # parsery wielokolorowe: 3MF, ścieżki G-code
-│   ├── plates.js         # wykrywanie wielu płyt w pliku
-│   ├── pricing.js        # wycena i odczyt danych ze slicerów
+│   ├── index.html        # UI
+│   ├── app.js            # UI logic: library, pricing, orders, stock, wizard
+│   ├── viewer.js         # 3D preview and thumbnails (three.js)
+│   ├── mc.js             # multicolour parsers: 3MF, G-code toolpaths
+│   ├── plates.js         # detection of multiple plates in one file
+│   ├── pricing.js        # pricing and reading slicer data
+│   ├── i18n.js           # language selection and translation helper
+│   ├── locales/          # translations (en, de)
 │   └── styles.css
-├── test/                 # testy (node:test) i pliki testowe
-├── scripts/vendor.js     # kopiuje potrzebne moduły three.js
-└── .github/workflows/    # CI (testy) i budowanie wydań
+├── test/                 # tests (node:test) and test files
+├── scripts/vendor.js     # copies the required three.js modules
+└── .github/workflows/    # CI (tests) and release builds
 ```
 
-### Wydanie nowej wersji
-1. Ustaw `version` w `package.json` i zrób commit.
+### Releasing a new version
+1. Set `version` in `package.json` and commit.
 2. `git tag v1.0.0 && git push origin v1.0.0`
-3. GitHub Actions uruchomi testy, zbuduje instalator i ZIP na Windows i opublikuje Release.
-   Zainstalowane aplikacje zaproponują aktualizację.
+3. GitHub Actions runs the tests, builds the Windows installer and ZIP, and publishes the release.
+   Installed copies of the app will offer the update.
 
-### Technologie
+### Built with
 [Electron](https://www.electronjs.org/) · [three.js](https://threejs.org/) · [fflate](https://github.com/101arrowz/fflate) ·
 [electron-builder](https://www.electron.build/) · [electron-updater](https://www.electron.build/auto-update)
 
-## Licencja
+## License
 
-Projekt jest udostępniony na licencji [MIT](LICENSE): możesz go używać, modyfikować i rozpowszechniać,
-również komercyjnie, pod warunkiem zachowania informacji o autorze i treści licencji.
+ModelVault is released under the [MIT](LICENSE) license. You may use, modify and distribute it,
+including commercially, as long as you keep the copyright notice and the license text.
 
 © 2026 K-Ptak

@@ -565,3 +565,6 @@ tr.ord-detail textarea { min-height: 54px; }
 .onb-summary div:last-child { border-bottom: none; }
 .onb-summary span { color: var(--dim); }
 .onb-summary b { font-weight: 500; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
+
+.onb-langs { display: flex; gap: 8px; justify-content: center; margin-top: 26px; }
+.onb-langs .chip { padding: 6px 16px; font-size: 13px; }
