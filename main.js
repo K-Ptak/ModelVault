@@ -2,7 +2,7 @@
 // Biblioteka = zwykły folder na dysku. Podfoldery = kategorie.
 // Tagi / notatki / status trzymane w <biblioteka>/.modelvault.json (wędruje razem z folderem).
 
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, Tray, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -31,6 +31,8 @@ const MT = {
   en: {
     'Ścieżka poza biblioteką': 'Path is outside the library',
     'Plik kopii jest uszkodzony': 'The backup file is damaged',
+    'Otwórz ModelVault': 'Open ModelVault',
+    'Zakończ': 'Quit',
     'Wybierz folder z modelami 3D': 'Choose the folder with your 3D models',
     'Nie można przenieść folderu do niego samego': 'A folder cannot be moved into itself',
     'Niedozwolona nazwa': 'Invalid name',
@@ -50,6 +52,8 @@ const MT = {
   de: {
     'Ścieżka poza biblioteką': 'Pfad liegt außerhalb der Bibliothek',
     'Plik kopii jest uszkodzony': 'Die Sicherungsdatei ist beschädigt',
+    'Otwórz ModelVault': 'ModelVault öffnen',
+    'Zakończ': 'Beenden',
     'Wybierz folder z modelami 3D': 'Ordner mit 3D-Modellen auswählen',
     'Nie można przenieść folderu do niego samego': 'Ein Ordner kann nicht in sich selbst verschoben werden',
     'Niedozwolona nazwa': 'Ungültiger Name',
@@ -115,7 +119,9 @@ const DEFAULT_SETTINGS = {
   backup: { auto: true, keep: 14, last: 0 },
   updates: { auto: true },
   onboardingDone: false,
-  printers: [], // [{ id, preset, name, x, y, z }] – obszar roboczy w mm
+  printers: [], // [{ id, preset, name, x, y, z, mmu }] – obszar roboczy w mm
+  plans: [],    // zaplanowane wydruki: [{ id, date, time, title, orderId, rels, printerId, note, done }]
+  notify: { enabled: true, daysBefore: 1, hour: 9, overdueDaily: true, queueLate: true, plans: true, background: false, autostart: false, sent: {} },
   filaments: [
     { id: 'f1', name: 'PlastSpaw PLA+', color: 'beżowy', hex: '#d8c4a2', type: 'PLA', pricePerKg: 45, density: 1.24, spoolWeight: 1000, remaining: null },
     { id: 'f2', name: 'PlastSpaw PLA+', color: 'zielony', hex: '#3f9c4f', type: 'PLA', pricePerKg: 45, density: 1.24, spoolWeight: 1000, remaining: null },
@@ -152,6 +158,8 @@ function loadSettings(given) {
     stockLog: Array.isArray(s.stockLog) ? s.stockLog : [],
     clients: Array.isArray(s.clients) ? s.clients : [],
     printers: Array.isArray(s.printers) ? s.printers.filter((p) => p && p.x > 0 && p.y > 0 && p.z > 0) : [],
+    plans: Array.isArray(s.plans) ? s.plans.filter((p) => p && typeof p.date === 'string') : [],
+    notify: { ...d.notify, ...(s.notify || {}), sent: (s.notify && s.notify.sent && typeof s.notify.sent === 'object') ? s.notify.sent : {} },
     business: { ...d.business, ...(s.business || {}) },
     queue: { ...d.queue, ...(s.queue || {}) },
     slicers: { ...d.slicers, ...(s.slicers || {}) },
@@ -488,6 +496,7 @@ handle('settings:set', async (next) => {
   settings.inbox = { ...settings.inbox, processed };
   settings.backup = { ...settings.backup, last };
   saveSettings();
+  applyBackgroundMode();
   return true;
 });
 handle('app:recovery', async () => recovery.splice(0));
@@ -816,18 +825,48 @@ handle('update:download', async () => { if (updaterReady) await autoUpdater.down
 handle('update:install', async () => { if (updaterReady) autoUpdater.quitAndInstall(); return true; });
 handle('app:version', async () => ({ version: app.getVersion(), updater: updaterReady, portable: isPortable, platform: process.platform }));
 
+// ---------- praca w tle, zasobnik, autostart ----------
+let tray = null, quitting = false;
+const startHidden = process.argv.includes('--hidden');
+function showWindow() { if (!win) return; if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+function applyBackgroundMode() {
+  const n = settings.notify || {};
+  if (n.background && !tray && !process.env.MV_SCREENSHOT) {
+    try {
+      tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'renderer', 'icon.png')).resize({ width: 16, height: 16 }));
+      tray.setToolTip('ModelVault');
+      tray.setContextMenu(Menu.buildFromTemplate([
+        { label: mt('Otwórz ModelVault'), click: showWindow },
+        { type: 'separator' },
+        { label: mt('Zakończ'), click: () => { quitting = true; app.quit(); } },
+      ]));
+      tray.on('click', showWindow);
+    } catch (e) { console.warn('tray', e.message); tray = null; }
+  } else if (!n.background && tray) { tray.destroy(); tray = null; }
+  if (app.isPackaged && process.platform !== 'linux') {
+    try { app.setLoginItemSettings({ openAtLogin: !!n.autostart, args: ['--hidden'] }); } catch (e) { console.warn('autostart', e.message); }
+  }
+}
+handle('app:focus', async () => { showWindow(); return true; });
+app.on('before-quit', () => { quitting = true; });
+
 // ---------- window ----------
 function createWindow() {
   win = new BrowserWindow({
     width: 1440, height: 900, minWidth: 980, minHeight: 600,
     backgroundColor: '#14161a',
     title: 'ModelVault',
+    show: !(startHidden && settings.notify && settings.notify.background),
     icon: path.join(__dirname, 'renderer', 'icon.png'),
     autoHideMenuBar: true,
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false },
   });
   Menu.setApplicationMenu(null);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  win.on('close', (e) => {
+    // praca w tle: zamknięcie okna chowa je do zasobnika, żeby powiadomienia o terminach dalej działały
+    if (!quitting && settings.notify && settings.notify.background && tray) { e.preventDefault(); win.hide(); }
+  });
   win.webContents.on('before-input-event', (_e, input) => {
     if (input.type === 'keyDown' && (input.key === 'F12' || (input.control && input.shift && input.key.toLowerCase() === 'i'))) win.webContents.toggleDevTools();
   });
@@ -857,12 +896,19 @@ try {
   if (pre && map[pre.language]) app.commandLine.appendSwitch('lang', map[pre.language]);
 } catch { /* pierwszy start – język systemu */ }
 
+// Windows: identyfikator aplikacji – potrzebny, żeby powiadomienia systemowe miały nazwę i ikonę ModelVault
+if (process.platform === 'win32') app.setAppUserModelId('pl.kptak.modelvault');
+// jedna instancja: drugie uruchomienie pokazuje okno już działającej (np. schowanej w zasobniku)
+if (!process.env.MV_SCREENSHOT && !app.requestSingleInstanceLock()) app.quit();
+else app.on('second-instance', () => showWindow());
+
 app.whenReady().then(async () => {
   loadConfig();
   loadSettings();
   const r = process.env.MV_ROOT || config.root;
   if (r && fs.existsSync(r)) await setRoot(r);
   createWindow();
+  applyBackgroundMode();
   mergeDetected().catch(() => {});
   maybeAutoBackup();
   setInterval(maybeAutoBackup, 3600 * 1000);

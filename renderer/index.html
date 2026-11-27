@@ -30,6 +30,7 @@
       <option value="size" data-i18n="Największe">Największe</option><option value="ext" data-i18n="Format">Format</option>
     </select>
     <input id="zoom" type="range" min="120" max="300" value="180" title="Rozmiar miniatur" data-i18n-title="Rozmiar miniatur">
+    <div class="bell-wrap"><button class="icon-btn big" id="bellBtn" title="Powiadomienia" data-i18n-title="Powiadomienia"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><span class="bell-badge" id="bellBadge" hidden></span></button><div class="bell-pop" id="bellPop" hidden></div></div>
     <button class="icon-btn big" id="settingsBtn" title="Ustawienia (Ctrl+,)" data-i18n-title="Ustawienia (Ctrl+,)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
   </header>
 
@@ -39,6 +40,7 @@
       <div class="nav-group">
         <div class="nav-item" id="orderNav"><span class="ico">∑</span><span data-i18n="Wycena zamówienia">Wycena zamówienia</span><span class="count" id="orderCount">0</span></div>
         <div class="nav-item" id="ordersNav"><span class="ico">≡</span><span data-i18n="Zamówienia">Zamówienia</span><span class="count" id="ordersCount">0</span></div>
+        <div class="nav-item" id="calendarNav"><span class="ico">▦</span><span data-i18n="Kalendarz">Kalendarz</span><span class="count" id="calendarCount"></span></div>
         <div class="nav-item" id="queueNav"><span class="ico">▤</span><span data-i18n="Kolejka druku">Kolejka druku</span><span class="count" id="queueCount"></span></div>
         <div class="nav-item" id="clientsNav"><span class="ico">☺</span><span data-i18n="Klienci">Klienci</span><span class="count" id="clientsCount"></span></div>
         <div class="nav-item" id="stockNav"><span class="ico">◎</span><span data-i18n="Magazyn filamentów">Magazyn filamentów</span><span class="count" id="stockCount"></span></div>
@@ -62,6 +64,7 @@
       <div class="order" id="stock" hidden></div>
       <div class="order" id="clients" hidden></div>
       <div class="order" id="queue" hidden></div>
+      <div class="order" id="calendar" hidden></div>
       <div class="empty" id="empty" hidden></div>
       <div class="drop-overlay" id="dropOverlay" hidden><div><span data-i18n="Upuść, aby skopiować do">Upuść, aby skopiować do</span> <b id="dropTarget"></b></div></div>
     </main>

@@ -1,6 +1,7 @@
 import { Viewer, parseModel, renderThumbnail, computeStats, extract3mfThumbnail, setModelColor, slotGeomStats, PALETTE, VIEW_PRESETS } from './viewer.js';
 import { gcodeColorInfo, hexDist } from './mc.js';
 import { T, LANG, LANGS, LOCALE, setLang } from './i18n.js';
+import { dayKey, parseDay, addDays, daysBetween, monthGrid, collectEvents, byDay, attentionCount, dueNotifications, pruneSent, isDay } from './calendar.js';
 import { PRINTER_LIBRARY, printerById, printerLabel, presetPrice, printerFromPreset, checkModelFit, MMU_LIBRARY, MMU_PROFILES, mmuById, mmuOptionsFor, printerSlots, checkColors } from './printers.js';
 import { priceItems, slicerInfoFromGcode, slicerInfoFrom3mf, fmtMoney, fmtNum, fmtDuration, parseDuration } from './pricing.js';
 
@@ -203,7 +204,7 @@ function computeVisible() {
     if (st.special === 'order' && !order().items.some((i) => i.rel === f.rel)) return false;
     if (st.special === 'dups' && !dupState.byRel.has(f.rel)) return false;
     if (st.special === 'coll' && !(m.collections || []).includes(st.coll)) return false;
-    if (['orders', 'stock', 'clients', 'queue'].includes(st.special)) return false;
+    if (['orders', 'stock', 'clients', 'queue', 'calendar'].includes(st.special)) return false;
     if (st.special === 'fav' && !m.favorite) return false;
     if (st.special === 'todo' && m.status !== 'todo') return false;
     if (st.special === 'printed' && m.status !== 'printed') return false;
@@ -274,6 +275,8 @@ function renderSidebar() {
     el.addEventListener('drop', (e) => { e.preventDefault(); el.classList.remove('drop-hover'); if (dragPayload?.kind === 'files') addToCollection(c.id, dragPayload.rels); });
   });
   $('#queueNav').classList.toggle('active', st.special === 'queue');
+  $('#calendarNav').classList.toggle('active', st.special === 'calendar');
+  updateBell();
   $('#clientsNav').classList.toggle('active', st.special === 'clients');
   $('#queueCount').textContent = S.orders.filter((o) => o.status === 'printing').length || '';
   $('#clientsCount').textContent = (S.clients || []).length || '';
@@ -460,14 +463,15 @@ const io = new IntersectionObserver((entries) => {
 
 function renderGrid() {
   const grid = $('#grid'), empty = $('#empty');
-  const VIEWS = ['order', 'orders', 'stock', 'clients', 'queue'];
-  const view = (lib || st.special === 'stock' || st.special === 'clients') && VIEWS.includes(st.special) ? st.special : null;
+  const VIEWS = ['order', 'orders', 'stock', 'clients', 'queue', 'calendar'];
+  const view = (lib || st.special === 'stock' || st.special === 'clients' || st.special === 'calendar') && VIEWS.includes(st.special) ? st.special : null;
   for (const v of VIEWS) $('#' + v).hidden = view !== v;
+  document.body.classList.toggle('wide-view', view === 'calendar'); // kalendarz potrzebuje miejsca – bez panelu podglądu
   grid.hidden = !!view;
   $('#crumbs').hidden = !!view && view !== 'order';
   if (view) {
     io.disconnect(); empty.hidden = true; visible = computeVisible(); renderCrumbs();
-    ({ order: renderOrder, orders: renderOrders, stock: renderStock, clients: renderClients, queue: renderQueue })[view]();
+    ({ order: renderOrder, orders: renderOrders, stock: renderStock, clients: renderClients, queue: renderQueue, calendar: renderCalendar })[view]();
     return;
   }
   if (st.special === 'dups' && lib) {
@@ -571,6 +575,7 @@ grid.addEventListener('contextmenu', (e) => {
   items.push({ label: T('Oznacz: wydrukowane'), action: () => setStatus(rels, 'printed') });
   items.push({ label: T('Dodaj tag…'), action: () => bulkTag(rels) });
   items.push({ label: T('Dodaj do wyceny'), action: () => addToOrder(rels) });
+  items.push({ label: T('Zaplanuj druk…'), action: () => planModal(null, { rels }) });
   items.push({ label: T('Dodaj do kolekcji…'), action: () => pickCollectionModal(rels) });
   if (st.special === 'coll') items.push({ label: T('Usuń z tej kolekcji'), action: () => removeFromCollection(st.coll, rels) });
   if (one) items.push({ label: T('Odśwież miniaturę'), action: () => { thumbs.delete(rel); requestThumb(rel, true, true); } });
@@ -945,6 +950,7 @@ function renderOrder() {
     <div class="order-head">
       <input class="order-name" id="oName" placeholder="${T('Nazwa zamówienia…')}" value="${esc(order().name || '')}" spellcheck="false">
       <select class="client-sel" id="oClient" title="${T('Klient')}">${clientOptions(order().clientId)}</select>
+      <label class="deadline-in" title="${T('Termin realizacji')}">${T('Termin')} <input type="date" id="oDeadline" value="${esc(order().deadline || '')}"></label>
       <button class="btn" id="oAdd">${T('+ Pozycja ręczna')}</button>
       <button class="btn primary" id="oSave">${T('Zapisz jako zamówienie')}</button>
       <button class="btn" id="oPdf">${T('Oferta PDF')}</button>
@@ -978,6 +984,7 @@ function renderOrder() {
   $('#oClear').onclick = async () => { if (!lines.length || await confirmModal(T('Wyczyścić wycenę?'), T('Usuniesz wszystkie pozycje z bieżącej wyceny. Pliki modeli zostaną nietknięte.'), T('Wyczyść'))) { order().items = []; order().name = ''; saveSettings(); updateOrderCount(); renderOrder(); } };
   const sv = $('#oSave'); if (sv) sv.onclick = () => saveOrderToHistory(lines, r);
   $('#oPdf').onclick = () => offerFromCurrentOrder();
+  $('#oDeadline').onchange = (e) => { order().deadline = e.target.value || null; saveSettings(); };
   $('#oClient').onchange = async (e) => {
     if (e.target.value === '__new') { const c = await clientModal(); order().clientId = c && c !== 'deleted' ? c.id : order().clientId; }
     else order().clientId = e.target.value || null;
@@ -1084,11 +1091,11 @@ function fitWarnings(lines) {
   for (const l of lines) {
     if (!l.f || !l.qty) continue;
     const fit = fitOf(l.f);
-    if (fit && !fit.fits) msgs.push(T('{0}: większy niż obszar roboczy drukarki {1} ({2})', { 0: l.name, 1: fit.best.printer.name, 2: overTxt(fit.best.over) }));
+    if (fit && !fit.fits) msgs.push(['⤢', T('{0}: większy niż obszar roboczy drukarki {1} ({2})', { 0: l.name, 1: fit.best.printer.name, 2: overTxt(fit.best.over) })]);
     const ci = colorIssue(l.f);
-    if (ci) msgs.push(`${l.name} – ${ci}`);
+    if (ci) msgs.push(['◐', `${l.name} – ${ci}`]);
   }
-  return msgs.length ? `<div class="stockwarn">${msgs.map((m) => `<div>⤢ ${esc(m)}</div>`).join('')}</div>` : '';
+  return msgs.length ? `<div class="stockwarn">${msgs.map(([ico, m]) => `<div>${ico} ${esc(m)}</div>`).join('')}</div>` : '';
 }
 function plateTooBig(f, pl) {
   const fit = fitOf(f);
@@ -1237,7 +1244,7 @@ function saveOrderToHistory(lines, r) {
   const no = nextOrderNo();
   const o = {
     id: 'o' + Date.now().toString(36), ...no, name: order().name || T('Zamówienie {0}', { 0: (no.no) }), createdAt: Date.now(), status: 'quoted', statusAt: { quoted: Date.now() },
-    clientId: order().clientId || null, clientName: (clientById(order().clientId) || {}).name || null, deadline: null,
+    clientId: order().clientId || null, clientName: (clientById(order().clientId) || {}).name || null, deadline: isDay(order().deadline) ? order().deadline : null,
     items: valid.map((l) => ({ rel: l.it.rel || null, name: l.name, qty: l.qty, minutes: l.minutes || 0, plates: l.plates || 1,
       parts: l.parts.map((p) => ({ name: p.name || '', filamentId: p.filament ? p.filament.id : null, label: filLabel(p.filament), hex: p.filament ? p.filament.hex : null, grams: p.grams || 0, pricePerKg: p.filament ? p.filament.pricePerKg : 0 })) })),
     totals: { cost: r.cost, price: r.price, grams: r.grams, minutes: r.minutes, prints: r.prints, filament: r.filament, energy: r.energy, wear: r.wear, labor: r.labor, buffer: r.buffer },
@@ -1733,11 +1740,249 @@ api.onInboxAdded((d) => {
   toast(T('Nowe w „{0}”: {1} (z {2})', { 0: (S.inbox.target), 1: (d.added.length === 1 ? baseName(d.added[0]) : d.added.length + T(' pliki')), 2: (d.file) }), false, { label: T('Pokaż'), fn: () => setView({ special: 'folder', folder: S.inbox.target }) });
 });
 
+
+// ---------- kalendarz ----------
+const cal = { y: new Date().getFullYear(), m: new Date().getMonth() };
+const plans = () => (Array.isArray(S.plans) ? S.plans : (S.plans = []));
+const planById = (id) => plans().find((p) => p.id === id);
+const orderById = (id) => S.orders.find((o) => o.id === id);
+function calEvents() { let sch = []; try { sch = lib ? schedule() : []; } catch {} return collectEvents(S.orders, plans(), sch, dayKey(new Date())); }
+const fmtDay = (k, opt = { weekday: 'short', day: 'numeric', month: 'short' }) => parseDay(k).toLocaleDateString(LOCALE, opt);
+const cap = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+function evLabel(e) {
+  if (e.kind === 'plan') return e.plan.title || T('Wydruk');
+  return `${e.order.no} ${e.order.name}`;
+}
+function evChip(e) {
+  const cls = e.kind === 'deadline' ? `deadline ${e.overdue ? 'overdue' : e.soon ? 'soon' : ''} ${e.active ? '' : 'inactive'}` : e.kind === 'finish' ? `finish ${e.late ? 'late' : ''}` : `plan ${e.plan.done ? 'done' : ''} ${e.overdue ? 'overdue' : ''}`;
+  const ico = e.kind === 'deadline' ? '⚑' : e.kind === 'finish' ? '◷' : e.plan.done ? '✓' : '●';
+  const tip = e.kind === 'deadline' ? T('Termin zamówienia {0}', { 0: evLabel(e) }) : e.kind === 'finish' ? T('Przewidywany koniec druku (kolejka): {0}, {1}', { 0: evLabel(e), 1: e.time }) : `${evLabel(e)}${e.time ? ' · ' + e.time : ''}${e.plan.note ? ' · ' + e.plan.note : ''}`;
+  const drag = e.kind !== 'finish' || false;
+  return `<div class="cev ${cls}" data-ev="${esc(e.id)}" ${drag && e.kind !== 'finish' ? 'draggable="true"' : ''} title="${esc(tip)}"><i>${ico}</i>${e.time && e.kind === 'plan' ? `<b>${esc(e.time)}</b> ` : ''}${esc(evLabel(e))}</div>`;
+}
+function renderCalendar() {
+  const el = $('#calendar');
+  const today = dayKey(new Date());
+  const ev = calEvents(), map = byDay(ev);
+  const grid = monthGrid(cal.y, cal.m);
+  const wd = Array.from({ length: 7 }, (_, i) => new Date(2024, 0, 1 + i).toLocaleDateString(LOCALE, { weekday: 'short' }));
+  const title = cap(new Date(cal.y, cal.m, 1).toLocaleDateString(LOCALE, { month: 'long', year: 'numeric' }));
+  const agendaEnd = addDays(today, 14);
+  const agenda = ev.filter((e) => (e.date >= today && e.date <= agendaEnd) || (e.kind === 'deadline' && e.overdue) || (e.kind === 'plan' && e.overdue));
+  const aMap = byDay(agenda);
+  el.innerHTML = `
+    <div class="cal-head">
+      <h2>${T('Kalendarz')}</h2>
+      <div class="cal-nav"><button class="icon-btn" id="calPrev" title="${T('Poprzedni miesiąc')}">‹</button><b>${esc(title)}</b><button class="icon-btn" id="calNext" title="${T('Następny miesiąc')}">›</button><button class="btn small" id="calToday">${T('Dziś')}</button></div>
+      <span style="flex:1"></span>
+      <button class="btn primary" id="calAdd">${T('+ Zaplanuj druk')}</button>
+    </div>
+    <div class="cal-grid">
+      ${wd.map((d) => `<div class="cal-wd">${esc(d)}</div>`).join('')}
+      ${grid.map((d) => `<div class="cal-day ${d.inMonth ? '' : 'out'} ${d.key === today ? 'today' : ''} ${d.key < today ? 'past' : ''}" data-day="${d.key}">
+        <div class="cd-num">${d.day}</div><div class="cd-evs">${(map.get(d.key) || []).map(evChip).join('')}</div></div>`).join('')}
+    </div>
+    <div class="cal-legend"><span><i class="lg deadline">⚑</i>${T('termin zamówienia')}</span><span><i class="lg plan">●</i>${T('zaplanowany druk')}</span><span><i class="lg finish">◷</i>${T('przewidywany koniec druku (kolejka)')}</span><span class="muted">${T('Kliknij dzień, aby zaplanować druk. Przeciągnij wpis, aby zmienić datę.')}</span></div>
+    <div class="cal-agenda"><h4>${T('Najbliższe 14 dni')}</h4>
+      ${agenda.length ? [...aMap.entries()].map(([k, list]) => `<div class="ag-day ${k < today ? 'past' : ''} ${k === today ? 'today' : ''}"><div class="ag-date">${k === today ? T('Dziś') : k === addDays(today, 1) ? T('Jutro') : esc(cap(fmtDay(k)))}${k < today ? ` <span class="late-badge">${T('po terminie')}</span>` : ''}</div><div class="ag-list">${list.map(evChip).join('')}</div></div>`).join('') : `<div class="muted-note">${T('Nic zaplanowanego. Ustaw termin zamówienia albo zaplanuj druk.')}</div>`}
+    </div>`;
+  $('#calPrev').onclick = () => { cal.m--; if (cal.m < 0) { cal.m = 11; cal.y--; } renderCalendar(); };
+  $('#calNext').onclick = () => { cal.m++; if (cal.m > 11) { cal.m = 0; cal.y++; } renderCalendar(); };
+  $('#calToday').onclick = () => { const d = new Date(); cal.y = d.getFullYear(); cal.m = d.getMonth(); renderCalendar(); };
+  $('#calAdd').onclick = () => planModal(null, { date: today });
+  const evById = new Map(ev.map((e) => [e.id, e]));
+  el.querySelectorAll('.cal-day').forEach((c) => {
+    c.onclick = (e) => { if (!e.target.closest('.cev')) planModal(null, { date: c.dataset.day }); };
+    c.addEventListener('dragover', (e) => { if (calDrag) { e.preventDefault(); c.classList.add('drop-hover'); } });
+    c.addEventListener('dragleave', () => c.classList.remove('drop-hover'));
+    c.addEventListener('drop', (e) => { e.preventDefault(); c.classList.remove('drop-hover'); if (calDrag) moveEvent(calDrag, c.dataset.day); calDrag = null; });
+  });
+  el.querySelectorAll('.cev').forEach((ch) => {
+    const e = evById.get(ch.dataset.ev);
+    ch.onclick = (x) => { x.stopPropagation(); openEvent(e); };
+    ch.addEventListener('dragstart', (x) => { calDrag = e; x.dataTransfer.setData('text/plain', e.id); x.dataTransfer.effectAllowed = 'move'; });
+    ch.addEventListener('dragend', () => { calDrag = null; });
+  });
+}
+let calDrag = null;
+function calChanged() { saveSettings(); if (st.special === 'calendar') renderCalendar(); if (st.special === 'queue') renderQueue(); updateBell(); }
+function moveEvent(e, day) {
+  if (e.kind === 'plan') {
+    const p = e.plan, prev = p.date; if (prev === day) return;
+    p.date = day; calChanged();
+    toast(T('Przeniesiono „{0}” na {1}', { 0: p.title, 1: fmtDay(day) }), false, { label: T('Cofnij'), fn: () => { p.date = prev; calChanged(); } });
+  } else if (e.kind === 'deadline') {
+    const o = e.order, prev = o.deadline; if (prev === day) return;
+    o.deadline = day; calChanged();
+    toast(T('Nowy termin zamówienia {0}: {1}', { 0: o.no, 1: fmtDay(day) }), false, { label: T('Cofnij'), fn: () => { o.deadline = prev; calChanged(); } });
+  }
+}
+function openEvent(e) {
+  if (!e) return;
+  if (e.kind === 'plan') planModal(e.plan);
+  else orderEventModal(e.order);
+}
+function orderEventModal(o) {
+  const sch = (() => { try { return schedule().find((s) => s.o.id === o.id); } catch { return null; } })();
+  const client = clientById(o.clientId) || (o.clientName ? { name: o.clientName } : null);
+  const stLabel = { quoted: T('Wycenione'), printing: T('W druku'), done: T('Wydane'), cancelled: T('Anulowane') }[o.status] || o.status;
+  return modal(`<h3>${T('Zamówienie {0}', { 0: esc(o.no) })}</h3>
+    <div class="ev-info"><div><span>${T('Nazwa')}</span><b>${esc(o.name)}</b></div>
+      ${client ? `<div><span>${T('Klient')}</span><b>${esc(client.name)}</b></div>` : ''}
+      <div><span>${T('Status')}</span><b>${esc(stLabel)}</b></div>
+      ${sch ? `<div><span>${T('Koniec druku (kolejka)')}</span><b class="${sch.late > 0 ? 'warn' : ''}">${esc(new Date(sch.end).toLocaleString(LOCALE, { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }))}${sch.late > 0 ? ' · ' + T('spóźnione o {0} d', { 0: Math.ceil(sch.late / 86400000) }) : ''}</b></div>` : ''}
+      <div><span>${T('Termin')}</span><input type="date" class="field sm" id="evDl" value="${esc(o.deadline || '')}"></div></div>
+    <div class="btns"><button class="btn" id="evOrders">${T('Pokaż w zamówieniach')}</button><button class="btn" id="evPlan">${T('Zaplanuj druk…')}</button><span style="flex:1"></span><button class="btn" id="evNo">${T('Zamknij')}</button><button class="btn primary" id="evOk">${T('Zapisz')}</button></div>`, (box, close) => {
+    box.querySelector('#evNo').onclick = () => close(null);
+    box.querySelector('#evOk').onclick = () => { const v = box.querySelector('#evDl').value; o.deadline = isDay(v) ? v : null; calChanged(); close(true); };
+    box.querySelector('#evOrders').onclick = () => { close(null); setView({ special: 'orders' }); };
+    box.querySelector('#evPlan').onclick = () => { close(null); planModal(null, { orderId: o.id, date: dayKey(new Date()) }); };
+  });
+}
+/** Okno planowania druku: nowy wpis (preset: { date, rels, orderId }) albo edycja istniejącego. */
+function planModal(plan, preset = {}) {
+  const isNew = !plan;
+  const rels = plan ? plan.rels || [] : preset.rels || [];
+  const ord = orderById(plan ? plan.orderId : preset.orderId);
+  const defTitle = plan ? plan.title : ord ? `${ord.no} ${ord.name}` : rels.length ? rels.map((r) => baseName(r).replace(/\.[^.]+$/, '')).slice(0, 3).join(', ') + (rels.length > 3 ? ` +${rels.length - 3}` : '') : '';
+  const active = S.orders.filter((o) => ['quoted', 'printing'].includes(o.status) || o.id === (plan ? plan.orderId : preset.orderId));
+  const pr = myPrinters();
+  return modal(`<h3>${isNew ? T('Zaplanuj druk') : T('Zaplanowany druk')}</h3>
+    <div class="plan-form">
+      <label><span>${T('Co drukujesz')}</span><input class="field" id="plT" value="${esc(defTitle)}" placeholder="${T('np. {0}', { 0: T('Wazon dla klientki') })}" spellcheck="false"></label>
+      <div class="row2"><label><span>${T('Dzień')}</span><input type="date" class="field" id="plD" value="${esc(plan ? plan.date : preset.date || dayKey(new Date()))}"></label>
+        <label><span>${T('Godzina (opcjonalnie)')}</span><input type="time" class="field" id="plH" value="${esc(plan ? plan.time || '' : '')}"></label></div>
+      <div class="row2"><label><span>${T('Zamówienie')}</span><select class="field" id="plO"><option value="">${T('— bez zamówienia —')}</option>${active.map((o) => `<option value="${esc(o.id)}" ${ord && ord.id === o.id ? 'selected' : ''}>${esc(o.no + ' ' + o.name)}</option>`).join('')}</select></label>
+        ${pr.length ? `<label><span>${T('Drukarka')}</span><select class="field" id="plP"><option value="">—</option>${pr.map((x) => `<option value="${esc(x.id)}" ${plan && plan.printerId === x.id ? 'selected' : ''}>${esc(printerTitle(x))}</option>`).join('')}</select></label>` : ''}</div>
+      ${rels.length ? `<div class="pl-models"><span>${T('Modele')}</span>${rels.map((r) => `<em>${esc(baseName(r))}</em>`).join('')}</div>` : ''}
+      <label><span>${T('Notatka')}</span><textarea class="field" id="plN" rows="2" placeholder="${T('np. {0}', { 0: T('PETG, podpory drzewiaste') })}">${esc(plan ? plan.note || '' : '')}</textarea></label>
+      ${!isNew ? `<label class="check"><input type="checkbox" id="plX" ${plan.done ? 'checked' : ''}> ${T('Wydrukowane')}</label>` : ''}
+      <p class="hint">${S.notify && S.notify.enabled && S.notify.plans ? T('Przypomnę o tym wydruku o wybranej godzinie (bez godziny – o {0}:00).', { 0: S.notify.hour }) : T('Przypomnienia o zaplanowanych wydrukach są wyłączone w ustawieniach.')}</p>
+    </div>
+    <div class="btns">${!isNew ? `<button class="btn danger" id="plDel">${T('Usuń')}</button>` : ''}<span style="flex:1"></span><button class="btn" id="plNo">${T('Anuluj')}</button><button class="btn primary" id="plOk">${T('Zapisz')}</button></div>`, (box, close) => {
+    const $b = (q) => box.querySelector(q);
+    $b('#plT').focus();
+    $b('#plO').onchange = (e) => { const o = orderById(e.target.value); if (o && !$b('#plT').value.trim()) $b('#plT').value = `${o.no} ${o.name}`; };
+    $b('#plNo').onclick = () => close(null);
+    if ($b('#plDel')) $b('#plDel').onclick = () => { S.plans = plans().filter((p) => p !== plan); calChanged(); close(true); toast(T('Usunięto z kalendarza')); };
+    $b('#plOk').onclick = () => {
+      const date = $b('#plD').value, title = $b('#plT').value.trim();
+      if (!isDay(date)) return toast(T('Wybierz dzień'), true);
+      if (!title) return toast(T('Wpisz, co drukujesz'), true);
+      const data = { title, date, time: $b('#plH').value || null, orderId: $b('#plO').value || null, printerId: $b('#plP') ? $b('#plP').value || null : null, note: $b('#plN').value.trim(), rels };
+      if (isNew) plans().push({ id: 'pl' + Date.now().toString(36), done: false, ...data });
+      else Object.assign(plan, data, { done: $b('#plX').checked });
+      calChanged(); close(true);
+      if (isNew) toast(T('Zaplanowano: {0}, {1}', { 0: title, 1: fmtDay(date) + (data.time ? ' ' + data.time : '') }), false, st.special !== 'calendar' ? { label: T('Pokaż'), fn: () => { const d = parseDay(date); cal.y = d.getFullYear(); cal.m = d.getMonth(); setView({ special: 'calendar' }); } } : null);
+    };
+  });
+}
+
+// ---------- powiadomienia ----------
+const feed = []; // powiadomienia z tej sesji (lista pod dzwonkiem)
+function notifText(n) {
+  const o = n.order, name = o ? `${o.no} ${o.name}` : '';
+  const client = o ? (clientById(o.clientId) || {}).name || o.clientName || '' : '';
+  switch (n.type) {
+    case 'soon': return { title: T('Zbliża się termin: {0}', { 0: name }), body: (n.days === 1 ? T('Termin jutro ({0}).', { 0: fmtDay(o.deadline) }) : T('Termin za {0} dni ({1}).', { 0: n.days, 1: fmtDay(o.deadline) })) + (client ? ' ' + client : '') };
+    case 'today': return { title: T('Dziś mija termin: {0}', { 0: name }), body: client || T('Zamówienie powinno być dziś gotowe.') };
+    case 'overdue': return { title: T('Termin minął: {0}', { 0: name }), body: T('Spóźnienie: {0} d (termin {1}).', { 0: n.days, 1: fmtDay(o.deadline) }) };
+    case 'queueLate': return { title: T('Zamówienie nie zdąży na termin: {0}', { 0: name }), body: T('Według kolejki druku skończy się ok. {0} d po terminie ({1}).', { 0: n.days, 1: fmtDay(o.deadline) }) };
+    case 'plan': { const p = n.plan, prn = myPrinters().find((x) => x.id === p.printerId); return { title: T('Zaplanowany druk: {0}', { 0: p.title }), body: [p.time ? T('Dziś o {0}', { 0: p.time }) : T('Na dziś'), prn ? printerTitle(prn) : '', p.note || ''].filter(Boolean).join(' · ') }; }
+    default: return { title: 'ModelVault', body: '' };
+  }
+}
+function goToNotification(n) {
+  api.focusWindow().catch(() => {});
+  if (n.plan) { const d = parseDay(n.plan.date); cal.y = d.getFullYear(); cal.m = d.getMonth(); setView({ special: 'calendar' }); planModal(planById(n.plan.id) || n.plan); return; }
+  if (n.order) { const o = orderById(n.order.id) || n.order; if (o.deadline) { const d = parseDay(o.deadline); cal.y = d.getFullYear(); cal.m = d.getMonth(); } setView({ special: 'calendar' }); orderEventModal(o); }
+}
+function showSystemNotification(n) {
+  const { title, body } = notifText(n);
+  feed.unshift({ ...n, title, body, at: Date.now() }); feed.splice(30);
+  try {
+    if (typeof Notification === 'undefined' || Notification.permission === 'denied') return;
+    const x = new Notification(title, { body, icon: 'icon.png', tag: n.key });
+    x.onclick = () => goToNotification(n);
+  } catch (e) { console.warn('notify', e); }
+}
+function checkNotifications() {
+  if (!S || !S.notify) return;
+  const N = S.notify;
+  if (!N.enabled) { updateBell(); return; }
+  let sch = []; try { sch = lib ? schedule() : []; } catch {}
+  const list = dueNotifications({ orders: S.orders, plans: plans(), schedule: sch }, Date.now(), N.sent || {}, N);
+  if (list.length) {
+    N.sent = N.sent || {};
+    for (const n of list.slice(0, 6)) showSystemNotification(n); // nie zasypujemy przy pierwszym uruchomieniu
+    for (const n of list) N.sent[n.key] = Date.now();
+    N.sent = pruneSent(N.sent);
+    saveSettings();
+  }
+  updateBell();
+}
+function updateBell() {
+  if (!S) return;
+  const today = dayKey(new Date());
+  const ev = calEvents();
+  const n = attentionCount(ev, today);
+  const b = $('#bellBadge');
+  if (b) { b.hidden = !n; b.textContent = n > 9 ? '9+' : String(n); }
+  const cc = $('#calendarCount'); if (cc) { cc.textContent = n || ''; cc.classList.toggle('warn', n > 0); }
+  if (!$('#bellPop').hidden) renderBellPop(ev);
+}
+function renderBellPop(ev = calEvents()) {
+  const today = dayKey(new Date()), soonEnd = addDays(today, Math.max(2, (S.notify && S.notify.daysBefore) || 0));
+  const items = ev.filter((e) => (e.kind === 'deadline' && e.active && e.date <= soonEnd) || (e.kind === 'plan' && !e.plan.done && e.date <= soonEnd) || (e.kind === 'finish' && e.late));
+  const when = (e) => e.date < today ? `<span class="late-badge">${T('po terminie')}</span>` : e.date === today ? T('Dziś') : e.date === addDays(today, 1) ? T('Jutro') : esc(cap(fmtDay(e.date)));
+  const what = (e) => e.kind === 'deadline' ? T('Termin: {0}', { 0: evLabel(e) }) : e.kind === 'finish' ? T('Nie zdąży na termin: {0}', { 0: evLabel(e) }) : T('Druk: {0}', { 0: evLabel(e) }) + (e.time ? ' · ' + e.time : '');
+  $('#bellPop').innerHTML = `<div class="bp-head"><b>${T('Powiadomienia')}</b><button class="linkbtn" id="bpSet">${T('Ustawienia')}</button></div>
+    ${items.length ? items.map((e) => `<div class="bp-it ${e.kind} ${e.overdue || e.late ? 'bad' : ''}" data-ev="${esc(e.id)}"><i>${e.kind === 'deadline' ? '⚑' : e.kind === 'finish' ? '◷' : '●'}</i><div><div>${esc(what(e))}</div><small>${when(e)}</small></div></div>`).join('') : `<div class="bp-empty">${T('Brak pilnych terminów.')}</div>`}
+    ${!S.notify || !S.notify.enabled ? `<div class="bp-off">${T('Powiadomienia systemowe są wyłączone.')}</div>` : ''}
+    <div class="bp-foot"><button class="btn small" id="bpCal">${T('Otwórz kalendarz')}</button></div>`;
+  const byId = new Map(ev.map((e) => [e.id, e]));
+  $('#bellPop').querySelectorAll('[data-ev]').forEach((it) => it.onclick = () => { $('#bellPop').hidden = true; const e = byId.get(it.dataset.ev); if (e) { const d = parseDay(e.date); cal.y = d.getFullYear(); cal.m = d.getMonth(); setView({ special: 'calendar' }); openEvent(e); } });
+  $('#bpCal').onclick = () => { $('#bellPop').hidden = true; setView({ special: 'calendar' }); };
+  $('#bpSet').onclick = () => { $('#bellPop').hidden = true; openSettings('notify'); };
+}
+$('#bellBtn').onclick = (e) => { e.stopPropagation(); const p = $('#bellPop'); p.hidden = !p.hidden; if (!p.hidden) renderBellPop(); };
+document.addEventListener('mousedown', (e) => { if (!e.target.closest('.bell-wrap')) $('#bellPop').hidden = true; });
+setInterval(checkNotifications, 60 * 1000);
+
+function tabNotify(body) {
+  const N = S.notify;
+  const draw = () => {
+    body.innerHTML = `
+      <label class="check"><input type="checkbox" id="nOn" ${N.enabled ? 'checked' : ''}> <b>${T('Powiadomienia systemowe o terminach i zaplanowanych wydrukach')}</b></label>
+      <div class="fields" ${N.enabled ? '' : 'style="opacity:.5;pointer-events:none"'}>
+        <label class="fld"><span>${T('Przypominaj o terminie zamówienia')}</span><span class="inp"><select id="nDays">${[0, 1, 2, 3, 5, 7].map((d) => `<option value="${d}" ${+N.daysBefore === d ? 'selected' : ''}>${d === 0 ? T('tylko w dniu terminu') : d === 1 ? T('dzień wcześniej i w dniu terminu') : T('{0} dni wcześniej i w dniu terminu', { 0: d })}</option>`).join('')}</select></span></label>
+        <label class="fld"><span>${T('Godzina porannych przypomnień')}</span><span class="inp"><select id="nHour">${Array.from({ length: 17 }, (_, i) => i + 5).map((h) => `<option value="${h}" ${+N.hour === h ? 'selected' : ''}>${String(h).padStart(2, '0')}:00</option>`).join('')}</select></span></label>
+      </div>
+      <div ${N.enabled ? '' : 'style="opacity:.5;pointer-events:none"'}>
+        <label class="check"><input type="checkbox" id="nLate" ${N.overdueDaily ? 'checked' : ''}> ${T('Przypominaj codziennie o zamówieniach po terminie')}</label>
+        <label class="check"><input type="checkbox" id="nQueue" ${N.queueLate ? 'checked' : ''}> ${T('Ostrzegaj, gdy według kolejki druku zamówienie nie zdąży na termin')}</label>
+        <label class="check"><input type="checkbox" id="nPlans" ${N.plans ? 'checked' : ''}> ${T('Przypominaj o zaplanowanych wydrukach (o wybranej godzinie albo rano)')}</label>
+      </div>
+      <div class="label">${T('Praca w tle')}</div>
+      <label class="check"><input type="checkbox" id="nBg" ${N.background ? 'checked' : ''}> ${T('Po zamknięciu okna działaj w tle (ikona w zasobniku systemowym)')}</label>
+      <label class="check"><input type="checkbox" id="nAuto" ${N.autostart ? 'checked' : ''} ${N.background ? '' : 'disabled'}> ${T('Uruchamiaj ModelVault w tle przy starcie systemu')}</label>
+      <p class="hint">${T('Powiadomienia działają, gdy ModelVault jest uruchomiony. Z pracą w tle i autostartem przypomnienia przyjdą nawet przy zamkniętym oknie. Zaległe przypomnienia o terminach pokażę po uruchomieniu.')}</p>
+      <button class="btn" id="nTest">${T('Wyślij powiadomienie testowe')}</button>`;
+    const bind = (id, k, num) => { body.querySelector(id).onchange = (e) => { N[k] = num ? +e.target.value : e.target.checked; if (k === 'background' && !N.background) N.autostart = false; saveSettings(); draw(); updateBell(); }; };
+    bind('#nOn', 'enabled'); bind('#nDays', 'daysBefore', true); bind('#nHour', 'hour', true); bind('#nLate', 'overdueDaily'); bind('#nQueue', 'queueLate'); bind('#nPlans', 'plans'); bind('#nBg', 'background'); bind('#nAuto', 'autostart');
+    body.querySelector('#nTest').onclick = () => {
+      try { new Notification(T('ModelVault – powiadomienie testowe'), { body: T('Tak będą wyglądać przypomnienia o terminach.'), icon: 'icon.png' }); toast(T('Wysłano powiadomienie testowe')); }
+      catch { toast(T('System nie pozwolił wyświetlić powiadomienia'), true); }
+    };
+  };
+  draw();
+}
+
 // ---------- ustawienia: okno ----------
 function openSettings(tab = 'appearance') {
   return modal(`<div class="settings">
     <div class="s-head"><h3>${T('Ustawienia')}</h3>
-      <div class="tabs"><button data-tab="appearance">${T('Wygląd')}</button><button data-tab="pricing">${T('Wycena')}</button><button data-tab="filaments">${T('Filamenty')}</button><button data-tab="printers">${T('Drukarki')}</button><button data-tab="slicers">${T('Slicery')}</button><button data-tab="inbox">${T('Pobrane')}</button><button data-tab="business">${T('Oferta')}</button><button data-tab="backup">${T('Kopia')}</button><button data-tab="about">${T('O programie')}</button></div></div>
+      <div class="tabs"><button data-tab="appearance">${T('Wygląd')}</button><button data-tab="pricing">${T('Wycena')}</button><button data-tab="filaments">${T('Filamenty')}</button><button data-tab="printers">${T('Drukarki')}</button><button data-tab="slicers">${T('Slicery')}</button><button data-tab="notify">${T('Powiadomienia')}</button><button data-tab="inbox">${T('Pobrane')}</button><button data-tab="business">${T('Oferta')}</button><button data-tab="backup">${T('Kopia')}</button><button data-tab="about">${T('O programie')}</button></div></div>
     <div class="s-body" id="sBody"></div>
     <div class="btns"><button class="btn" id="sReset">${T('Przywróć domyślne')}</button><span style="flex:1"></span><button class="btn primary" id="sClose">${T('Gotowe')}</button></div>
   </div>`, (box, close) => {
@@ -1747,7 +1992,7 @@ function openSettings(tab = 'appearance') {
     const show = (t) => {
       current = t;
       box.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
-      ({ appearance: tabAppearance, pricing: tabPricing, filaments: tabFilaments, printers: tabPrinters, slicers: tabSlicers, inbox: tabInbox, business: tabBusiness, backup: tabBackup, about: tabAbout })[t](body);
+      ({ appearance: tabAppearance, pricing: tabPricing, filaments: tabFilaments, printers: tabPrinters, slicers: tabSlicers, notify: tabNotify, inbox: tabInbox, business: tabBusiness, backup: tabBackup, about: tabAbout })[t](body);
       box.querySelector('#sReset').hidden = !['appearance', 'pricing', 'filaments'].includes(t);
     };
     box.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => show(b.dataset.tab));
@@ -2690,6 +2935,7 @@ orderNav.addEventListener('drop', (e) => { e.preventDefault(); orderNav.classLis
 $('#settingsBtn').onclick = () => openSettings();
 $('#ordersNav').onclick = () => lib && setView({ special: 'orders' });
 $('#queueNav').onclick = () => lib && setView({ special: 'queue' });
+$('#calendarNav').onclick = () => S && setView({ special: 'calendar' });
 $('#clientsNav').onclick = () => S && setView({ special: 'clients' });
 $('#newCollBtn').onclick = () => lib && newCollection(sel.size ? [...sel] : []);
 $('#stockNav').onclick = () => S && setView({ special: 'stock' });
@@ -2712,5 +2958,6 @@ $('#stockNav').onclick = () => S && setView({ special: 'stock' });
   setModelColor(S.appearance.modelColor);
   await reload();
   if (!S.onboardingDone) openOnboarding();
+  setTimeout(checkNotifications, 4000);
 })();
 window.__mv = { openOnboarding, st, sel, selectCard, reload, setView, openSettings, addToOrder, get lib() { return lib; }, get S() { return S; } };

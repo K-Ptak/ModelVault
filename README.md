@@ -69,6 +69,8 @@ so everything keeps working in File Explorer, and the app picks up changes as th
 - **PDF quote:** a document with thumbnails, materials and item prices, ready to send to a client.
 - **Print queue:** a schedule of orders with estimated finish times based on your number of printers and working hours, plus a Gantt chart and deadline tracking.
 - **Statistics:** revenue, cost and profit over 12 months, profit by category, and filament usage.
+- **Calendar:** order due dates, scheduled prints and estimated print finish times from the queue in a month view with a 14-day agenda. Click a day to schedule a print (optionally linked to an order, models and a printer), drag entries to reschedule.
+- **Notifications:** system notifications before and on the due date, daily reminders for overdue orders, a warning when the queue says an order won't make its due date, and reminders for scheduled prints. A bell in the toolbar lists what needs attention. ModelVault can keep running in the system tray and start with Windows so reminders arrive even when the window is closed.
 - **Filament stock:** spool levels, the value of filament in stock, low-spool warnings, and automatic deduction of usage that you can undo.
 
 ### ⚙️ Convenience
@@ -88,6 +90,9 @@ so everything keeps working in File Explorer, and the app picks up changes as th
   <tr>
     <td><img src="docs/screenshots/orders.png" alt="Orders and statistics"><p align="center"><sub><b>Orders and statistics</b>: revenue, cost, profit</sub></p></td>
     <td><img src="docs/screenshots/stock.png" alt="Filament stock"><p align="center"><sub><b>Filament stock</b>: spool levels and usage history</sub></p></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/screenshots/calendar.png" alt="Calendar"><p align="center"><sub><b>Calendar and notifications</b>: due dates, scheduled prints, queue estimates</sub></p></td>
   </tr>
   <tr>
     <td><img src="docs/screenshots/queue.png" alt="Print queue"><p align="center"><sub><b>Print queue</b>: schedule and deadlines</sub></p></td>
@@ -178,7 +183,7 @@ git clone https://github.com/K-Ptak/ModelVault.git
 cd ModelVault
 npm install      # dependencies + copies the required three.js modules to renderer/vendor
 npm start        # run the app
-npm test         # tests: pricing, multicolour files, plates, damaged files, build volume, translations
+npm test         # tests: pricing, multicolour files, plates, damaged files, printers, calendar, translations
 npm run dist     # build the installer and ZIP locally (dist/ folder)
 ```
 
@@ -206,7 +211,8 @@ UI text is written in Polish in the source and wrapped in `T('…')`. That Polis
 │   ├── mc.js             # multicolour parsers: 3MF, G-code toolpaths
 │   ├── plates.js         # detection of multiple plates in one file
 │   ├── pricing.js        # pricing and reading slicer data
-│   ├── printers.js       # printer library and build volume check
+│   ├── printers.js       # printer library, AMS systems, build volume check
+│   ├── calendar.js       # calendar events and notification rules
 │   ├── i18n.js           # language selection and translation helper
 │   ├── locales/          # translations (en, de)
 │   └── styles.css
