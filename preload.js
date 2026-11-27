@@ -48,6 +48,8 @@ contextBridge.exposeInMainWorld('api', {
   inboxScanExisting: () => call('inbox:scanExisting'),
   inboxPickFolder: () => call('inbox:pickFolder'),
   onInboxAdded: (cb) => ipcRenderer.on('inbox:added', (_e, d) => cb(d)),
+  onInboxError: (cb) => ipcRenderer.on('inbox:error', (_e, d) => cb(d)),
+  recovery: () => call('app:recovery'),
   savePdf: (html, name) => call('pdf:save', html, name),
   updateCheck: () => call('update:check'),
   updateDownload: () => call('update:download'),

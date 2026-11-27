@@ -59,15 +59,99 @@ function splitObjMaterials(obj) {
   return { object: out, slots: names.map((n, i) => ({ key: 'o' + i, ext: null, name: n || T('Materiał {0}', { 0: i + 1 }), hex: null })) };
 }
 
-/** Zwraca { object, zUp, isGcode, slots:[{name, hex, ...}], info } */
+// ---------- walidacja plików ----------
+const head = (buffer, n = 512) => new TextDecoder().decode(new Uint8Array(buffer, 0, Math.min(n, buffer.byteLength)));
+const fail = (key, vars) => { const e = new Error(T(key, vars)); e.userFacing = true; return e; };
+
+/** Sprawdza STL i zwraca bufor do sparsowania (binarny bez nadmiarowych bajtów) albo rzuca czytelny błąd. */
+export function checkStl(buffer) {
+  const len = buffer.byteLength;
+  if (len === 0) throw fail('Plik jest pusty (0 bajtów).');
+  const txt = head(buffer, 1024);
+  const ascii = /^\s*solid\b/i.test(txt) && /\bfacet\b|\bendsolid\b/i.test(txt + head(buffer.slice(Math.max(0, len - 1024)), 1024));
+  if (len >= 84) {
+    const n = new DataView(buffer).getUint32(80, true);
+    const need = 84 + n * 50;
+    if (n > 0 && need === len) return buffer;
+    if (n > 0 && need < len && !ascii) return buffer.slice(0, need); // nadmiarowe bajty na końcu
+    if (!ascii) {
+      if (n === 0) throw fail('Plik nie zawiera żadnej geometrii.');
+      const have = Math.floor((len - 84) / 50);
+      // wygląda na STL ucięty w trakcie pobierania? (pierwsze trójkąty mają sensowne współrzędne)
+      const dv = new DataView(buffer);
+      let plausible = n <= 50_000_000 && have > 0;
+      for (let t = 0; plausible && t < Math.min(have, 16); t++) for (let k = 3; k < 12; k++) { const v = dv.getFloat32(84 + t * 50 + k * 4, true); if (!Number.isFinite(v) || Math.abs(v) > 1e5) { plausible = false; break; } }
+      if (!plausible) throw fail('To nie jest prawidłowy plik STL albo plik jest uszkodzony.');
+      throw fail('Plik STL jest niekompletny: zawiera {0} z {1} trójkątów (przerwane pobieranie?).', { 0: have.toLocaleString(), 1: n.toLocaleString() });
+    }
+  }
+  if (!ascii) throw fail('To nie jest prawidłowy plik STL albo plik jest uszkodzony.');
+  if (len < 84 || !/\bfacet\b/i.test(txt + head(buffer.slice(Math.max(0, len - 1024)), 1024))) throw fail('Plik nie zawiera żadnej geometrii.');
+  return buffer;
+}
+
+/** Usuwa trójkąty z nieprawidłowymi współrzędnymi (NaN, ∞, zły indeks); zwraca liczbę pozostałych trójkątów. */
+export function sanitizeObject(object) {
+  let total = 0, dropped = 0;
+  const kill = [];
+  object.traverse((m) => {
+    if (!m.isMesh) return;
+    let g = m.geometry;
+    const pos = g.attributes.position;
+    if (!pos) { kill.push(m); return; }
+    if (g.index) {
+      const idx = g.index.array, ok = [];
+      for (let i = 0; i + 2 < idx.length; i += 3) if (idx[i] < pos.count && idx[i + 1] < pos.count && idx[i + 2] < pos.count) ok.push(idx[i], idx[i + 1], idx[i + 2]);
+      if (ok.length !== idx.length - (idx.length % 3)) { dropped += (idx.length - ok.length) / 3; g.setIndex(ok); }
+      const ng = g.toNonIndexed(); g.dispose(); m.geometry = g = ng;
+    }
+    const a = g.attributes.position.array, n = Math.floor(a.length / 9);
+    let bad = 0;
+    for (let t = 0; t < n; t++) for (let k = 0; k < 9; k++) if (!Number.isFinite(a[t * 9 + k])) { bad++; break; }
+    if (bad) {
+      const out = new Float32Array((n - bad) * 9);
+      let j = 0;
+      for (let t = 0; t < n; t++) { let ok = true; for (let k = 0; k < 9; k++) if (!Number.isFinite(a[t * 9 + k])) { ok = false; break; } if (ok) { out.set(a.subarray(t * 9, t * 9 + 9), j); j += 9; } }
+      const ng = new THREE.BufferGeometry(); ng.setAttribute('position', new THREE.BufferAttribute(out, 3)); ng.computeVertexNormals();
+      g.dispose(); m.geometry = ng;
+      dropped += bad;
+    }
+    const cnt = Math.floor(m.geometry.attributes.position.count / 3);
+    if (!cnt) kill.push(m);
+    total += cnt;
+  });
+  kill.forEach((m) => m.parent && m.parent.remove(m));
+  return { tris: total, dropped };
+}
+
+/** Zwraca { object, zUp, isGcode, slots:[{name, hex, ...}], info, warnings } */
 export function parseModel(ext, buffer) {
+  if (!buffer || buffer.byteLength === 0) throw fail('Plik jest pusty (0 bajtów).');
+  let parsed;
+  try { parsed = parseRaw(ext, buffer); } catch (e) {
+    if (e.userFacing) throw e;
+    if (e instanceof RangeError && /allocation/i.test(e.message)) throw fail('Plik jest uszkodzony: deklaruje nierealnie dużo danych.');
+    throw fail('Plik jest uszkodzony lub ma nieobsługiwaną strukturę ({0}).', { 0: e.message.replace(/^THREE\.\w+:\s*/, '').slice(0, 120) });
+  }
+  parsed.warnings = parsed.warnings || [];
+  if (!parsed.isGcode) {
+    const r = sanitizeObject(parsed.object);
+    if (!r.tris) throw fail('Plik nie zawiera żadnej geometrii.');
+    if (r.dropped) parsed.warnings.push(T('Pominięto {0} uszkodzonych trójkątów.', { 0: r.dropped.toLocaleString() }));
+    if (parsed.needPlates) return withPlates(parsed);
+  }
+  return parsed;
+}
+
+function parseRaw(ext, buffer) {
   switch (ext) {
     case 'stl': {
-      const geo = new STLLoader().parse(buffer);
+      const geo = new STLLoader().parse(checkStl(buffer));
       geo.computeVertexNormals(); // wiele plików STL ma zerowe/błędne normalne
-      return withPlates({ object: meshFromGeometry(geo), zUp: true, slots: [{ key: 's0', name: '', hex: null }] });
+      return { needPlates: true, object: meshFromGeometry(geo), zUp: true, slots: [{ key: 's0', name: '', hex: null }] };
     }
     case 'ply': {
+      if (!/^ply\s/.test(head(buffer, 8))) throw fail('To nie jest prawidłowy plik PLY albo plik jest uszkodzony.');
       const geo = new PLYLoader().parse(buffer);
       const m = meshFromGeometry(geo);
       if (geo.attributes.color) m.material.vertexColors = true, m.material.color.set(0xffffff);
@@ -77,19 +161,23 @@ export function parseModel(ext, buffer) {
       const text = new TextDecoder().decode(buffer);
       const obj = new OBJLoader().parse(text);
       const r = splitObjMaterials(obj);
-      return withPlates({ object: r.object, zUp: false, slots: r.slots.length ? r.slots : [{ key: 's0', name: '', hex: null }] });
+      return { needPlates: true, object: r.object, zUp: false, slots: r.slots.length ? r.slots : [{ key: 's0', name: '', hex: null }] };
     }
     case '3mf': {
+      const sig = new Uint8Array(buffer, 0, Math.min(4, buffer.byteLength));
+      if (sig[0] !== 0x50 || sig[1] !== 0x4b) throw fail('To nie jest prawidłowy plik 3MF (archiwum ZIP) albo plik jest uszkodzony.');
       const mc = parse3MFColors(buffer);
       if (mc) {
         const g = new THREE.Group();
         for (const ch of mc.chunks) { if (!ch.positions.length) continue; const m = meshPerSlot(ch.slot, ch.positions); m.userData.plate = ch.plate; g.add(m); }
-        return withPlates({ object: g, zUp: true, slots: mc.slots, info: { slice: mc.slice }, platesFromFile: mc.plateCount > 1 ? mc.plateIds : null });
+        if (!g.children.length) throw fail('Plik nie zawiera żadnej geometrii.');
+        return { needPlates: true, object: g, zUp: true, slots: mc.slots, info: { slice: mc.slice }, platesFromFile: mc.plateCount > 1 ? mc.plateIds : null };
       }
-      const obj = new ThreeMFLoader().parse(buffer);
+      let obj;
+      try { obj = new ThreeMFLoader().parse(buffer); } catch { throw fail('Plik 3MF nie zawiera modelu 3D, który da się odczytać (uszkodzone lub niepełne archiwum).'); }
       let meshes = 0;
       obj.traverse((c) => { if (c.isMesh) meshes++; });
-      if (!meshes) throw new Error(T('Plik 3MF nie zawiera siatki, którą da się odczytać'));
+      if (!meshes) throw fail('Plik 3MF nie zawiera siatki, którą da się odczytać');
       restyle(obj);
       return { object: obj, zUp: true, slots: [{ key: 's0', name: '', hex: null }] };
     }
@@ -114,11 +202,11 @@ export function parseModel(ext, buffer) {
         ls.userData.travel = true; ls.visible = false;
         g.add(ls);
       }
-      if (!paths.tools.size) throw new Error(T('Nie znaleziono ścieżek druku w G-code'));
+      if (![...paths.tools.values()].some((a) => a.length)) throw fail('Nie znaleziono ścieżek druku w G-code');
       return { object: g, zUp: true, isGcode: true, slots: ci.slots, info: { toolChanges: ci.toolChanges, perSlotGrams: ci.perSlotGrams } };
     }
     default:
-      throw new Error(T('Brak podglądu dla tego formatu'));
+      throw fail('Brak podglądu dla tego formatu');
   }
 }
 
@@ -366,6 +454,20 @@ export class Viewer {
       this.holder = null;
     }
     if (this.grid) { this.scene.remove(this.grid); this.grid.geometry.dispose(); this.grid = null; }
+    this.setBuildVolume(null);
+  }
+  /** Obrys obszaru roboczego {x, y, z} (mm) wyśrodkowany pod widocznym modelem; ok=false → czerwony. */
+  setBuildVolume(bed, ok = true, rotated = false) {
+    if (this.volume) { this.scene.remove(this.volume); this.volume.geometry.dispose(); this.volume.material.dispose(); this.volume = null; }
+    if (!bed || !this.holder) return;
+    this._bed = [bed, ok, rotated];
+    const bx = rotated ? bed.y : bed.x, by = rotated ? bed.x : bed.y;
+    const geo = new THREE.EdgesGeometry(new THREE.BoxGeometry(bx, bed.z, by));
+    const mat = new THREE.LineBasicMaterial({ color: ok ? 0x6aa7ff : 0xe5484d, transparent: true, opacity: ok ? 0.45 : 0.9 });
+    const box = boxOf(this.holder), c = box.getCenter(new THREE.Vector3());
+    this.volume = new THREE.LineSegments(geo, mat);
+    this.volume.position.set(c.x, box.min.y + bed.z / 2, c.z);
+    this.scene.add(this.volume);
   }
   show(parsed) {
     this.clear();
@@ -395,6 +497,7 @@ export class Viewer {
     this.holder.traverse((o) => { if (o.isMesh) { const hide = k != null && (o.userData.plate || 0) !== k; o.visible = !hide; o.userData.hiddenPlate = hide; } });
     const box = boxOf(this.holder);
     if (this.grid) { const c = box.getCenter(new THREE.Vector3()); this.grid.position.x = c.x; this.grid.position.z = c.z; }
+    if (this.volume && this._bed) this.setBuildVolume(...this._bed);
     fitCamera(this.camera, this.holder, this.controls);
   }
   /** Kierunek kamery względem środka i odległość w promieniach – do zapamiętania widoku miniatury */

@@ -1,6 +1,7 @@
 import { Viewer, parseModel, renderThumbnail, computeStats, extract3mfThumbnail, setModelColor, slotGeomStats, PALETTE, VIEW_PRESETS } from './viewer.js';
 import { gcodeColorInfo, hexDist } from './mc.js';
 import { T, LANG, LANGS, LOCALE, setLang } from './i18n.js';
+import { PRINTER_LIBRARY, printerById, printerLabel, presetPrice, printerFromPreset, checkModelFit } from './printers.js';
 import { priceItems, slicerInfoFromGcode, slicerInfoFrom3mf, fmtMoney, fmtNum, fmtDuration, parseDuration } from './pricing.js';
 
 const api = window.api;
@@ -72,7 +73,7 @@ function tagColor(t) {
 }
 const metaOf = (rel) => (lib && lib.meta[rel]) || {};
 
-function toast(msg, err = false, action = null) {
+function toast(msg, err = false, action = null, ms = null) {
   const el = document.createElement('div');
   el.className = 'toast' + (err ? ' err' : '');
   const span = document.createElement('span');
@@ -85,7 +86,7 @@ function toast(msg, err = false, action = null) {
     el.appendChild(b);
   }
   $('#toasts').appendChild(el);
-  setTimeout(() => el.remove(), err ? 5000 : action ? 7000 : 2600);
+  setTimeout(() => el.remove(), ms || (err ? 5000 : action ? 7000 : 2600));
 }
 async function safe(fn, okMsg) {
   try { const r = await fn(); if (okMsg) toast(okMsg); return r; }
@@ -166,6 +167,18 @@ async function reload() {
     if (focused && !lib.files.some((f) => f.rel === focused)) focused = null;
   }
   renderAll();
+  showRecovery();
+}
+/** Informuje o plikach danych, które przy starcie były uszkodzone i zostały odtworzone. */
+async function showRecovery() {
+  let list = [];
+  try { list = await api.recovery(); } catch { return; }
+  for (const r of list) {
+    const what = r.what === 'settings' ? T('Plik ustawień był uszkodzony') : T('Plik z tagami i notatkami biblioteki był uszkodzony');
+    const how = r.from ? T('Odtworzono dane z kopii {0}.', { 0: r.from }) : T('Zaczynam od pustych danych.');
+    const kept = r.brokenCopy ? ' ' + T('Uszkodzony plik zachowałem jako {0}.', { 0: baseName(r.brokenCopy.replace(/\\/g, '/')) }) : '';
+    toast(`${what}. ${how}${kept}`, true, { label: 'OK', fn: () => {} }, 20000);
+  }
 }
 let reloadTimer = null;
 api.onChanged(() => { clearTimeout(reloadTimer); reloadTimer = setTimeout(reload, 150); });
@@ -478,9 +491,7 @@ function renderGrid() {
     const t = thumbs.get(f.rel);
     const img = t && t !== 'none' ? `<img src="${t}" class="${f.image ? 'photo' : ''}" draggable="false">` : t === 'none' ? `<span class="ph">${esc(f.ext)}</span>` : '<span class="spin"></span>';
     const dg = st.special === 'dups' ? dupState.byRel.get(f.rel) : undefined;
-    const col = ls.get(colorsKey(f), null);
-    const nCol = col && col.slots ? col.slots.length : 1;
-    const flags = `${dg !== undefined ? `<span class="flag dup">#${dg + 1}</span>` : ''}${nCol > 1 ? `<span class="flag mc" title="${T('{0} kolory', { 0: (nCol) })}">${(col.slots.slice(0, 4).map((x, i) => `<i style="background:${esc(x.hex || PALETTE[i % PALETTE.length])}"></i>`).join(''))}</span>` : ''}${m.source ? `<span class="flag src" title="${T('Ma link do źródła')}">↗</span>` : ''}${m.favorite ? '<span class="flag fav">★</span>' : ''}${m.status === 'todo' ? '<span class="flag todo">◷</span>' : ''}${m.status === 'printed' ? '<span class="flag printed">✓</span>' : ''}`;
+    const flags = cardFlags(f, m, dg);
     const dots = (m.tags || []).slice(0, 5).map((tg) => `<i style="background:${tagColor(tg)}" title="${esc(tg)}"></i>`).join('');
     return `<div class="card ${sel.has(f.rel) ? 'sel' : ''}" data-rel="${esc(f.rel)}" draggable="true" title="${esc(f.rel)}">
       <div class="thumb">${img}<div class="badges"><span class="ext ${esc(f.ext)}">${esc(f.ext)}</span><span class="flags">${flags}</span></div></div>
@@ -589,12 +600,18 @@ async function bulkTag(rels) {
 // ---------- miniatury ----------
 const queue = [];
 let busy = false;
+function cardFlags(f, m = lib.meta[f.rel] || {}, dg = st.special === 'dups' ? dupState.byRel.get(f.rel) : undefined) {
+  const col = ls.get(colorsKey(f), null);
+  const nCol = col && col.slots ? col.slots.length : 1;
+  const fit = fitOf(f);
+  const stt = ls.get(statsKey(f), null);
+  const failed = f.viewable && stt && stt.failed;
+  return `${failed ? `<span class="flag err" title="${esc(T('Nie udało się odczytać pliku — może być uszkodzony') + (stt.error ? ': ' + stt.error : ''))}">!</span>` : ''}${fit && !fit.fits ? `<span class="flag big" title="${esc(fitTitle(fit))}">⤢</span>` : ''}${dg !== undefined ? `<span class="flag dup">#${dg + 1}</span>` : ''}${nCol > 1 ? `<span class="flag mc" title="${T('{0} kolory', { 0: (nCol) })}">${(col.slots.slice(0, 4).map((x, i) => `<i style="background:${esc(x.hex || PALETTE[i % PALETTE.length])}"></i>`).join(''))}</span>` : ''}${m.source ? `<span class="flag src" title="${T('Ma link do źródła')}">↗</span>` : ''}${m.favorite ? '<span class="flag fav">★</span>' : ''}${m.status === 'todo' ? '<span class="flag todo">◷</span>' : ''}${m.status === 'printed' ? '<span class="flag printed">✓</span>' : ''}`;
+}
 function refreshCardFlags(rel) {
   const card = document.querySelector(`#grid .card[data-rel="${CSS.escape(rel)}"] .flags`);
   const f = lib && lib.files.find((x) => x.rel === rel);
-  if (!card || !f || card.querySelector('.mc')) return;
-  const col = ls.get(colorsKey(f), null);
-  if (col && col.slots && col.slots.length > 1) card.insertAdjacentHTML('afterbegin', `<span class="flag mc" title="${T('{0} kolory', { 0: (col.slots.length) })}">${col.slots.slice(0, 4).map((x, i) => `<i style="background:${esc(x.hex || PALETTE[i % PALETTE.length])}"></i>`).join('')}</span>`);
+  if (card && f) card.innerHTML = cardFlags(f);
 }
 function setCardThumb(rel) {
   refreshCardFlags(rel);
@@ -651,9 +668,15 @@ async function pump() {
         url = renderThumbnail(parsed, 320, slotColors(f, true), thumbSpecFor(f));
       }
       if (url) api.putThumb(f.rel, f.mtime, f.size, thumbKeyFor(f), url).catch(() => {});
-    } catch (e) { console.warn('thumb', rel, e); }
+    } catch (e) {
+      console.warn('thumb', rel, e.message);
+      const prev = ls.get(statsKey(f), null);
+      if (f.viewable && (!prev || prev.failed)) ls.set(statsKey(f), { failed: true, error: e.message });
+    }
     thumbs.set(rel, url || 'none');
     setCardThumb(rel);
+    // wymiary (obszar roboczy) i kolory dla plików z gotową miniaturą liczymy w tle
+    if (f.viewable && !ls.get(statsKey(f), null)) ensureAnalysis(f).then(() => refreshCardFlags(rel));
   }
   busy = false;
 }
@@ -806,7 +829,7 @@ function ensureAnalysis(f) {
     } catch (e) {
       console.warn('analysis', f.rel, e);
       if (needSl && ls.get(slicerKey(f), undefined) === undefined) ls.set(slicerKey(f), null);
-      if (needSt && !ls.get(statsKey(f), null)) ls.set(statsKey(f), { failed: true });
+      if (needSt && !ls.get(statsKey(f), null)) ls.set(statsKey(f), { failed: true, error: e.message });
       if (needCol && ls.get(colorsKey(f), undefined) === undefined) ls.set(colorsKey(f), null);
       return false;
     } finally { analyzing.delete(f.rel); }
@@ -936,6 +959,7 @@ function renderOrder() {
       <tfoot><tr><td></td><td>${T('Razem')}</td><td></td><td class="r">${fmtNum(r.grams, 0)} g</td><td class="r">${fmtDuration(r.minutes)}</td><td class="r">${r.prints}</td><td class="r">${fmtMoney(r.filament, c)}</td><td></td></tr></tfoot>
     </table>
     ${stockWarnings(r.byFil.map((b) => ({ filament: b.filament, grams: b.grams })))}
+    ${fitWarnings(lines)}
     <div class="legend"><span class="src">⚙</span> ${T('dane ze slicera (G-code / 3MF) ·')} <span class="src est">~</span> ${T('szacunek z objętości modelu · puste pole = wartość automatyczna, wpisz liczbę, aby nadpisać')}</div>
     <div class="summary">
       <div class="scard"><h4>${T('Materiały')}</h4>${mats}</div>
@@ -1026,6 +1050,51 @@ function stockWarnings(list) {
   }
   return msgs.length ? `<div class="stockwarn">${msgs.map((m) => `<div>⚠ ${esc(m)}</div>`).join('')}</div>` : '';
 }
+// ---------- obszar roboczy drukarki ----------
+const myPrinters = () => (Array.isArray(S.printers) ? S.printers : []);
+const fileStats = (f) => { const s = ls.get(statsKey(f), null); return s && !s.failed ? s : null; };
+/** Wynik sprawdzenia, czy model mieści się na którejś z drukarek użytkownika (null = brak danych). */
+function fitOf(f) { return f && f.viewable ? checkModelFit(fileStats(f), myPrinters()) : null; }
+const mm = (v) => fmtNum(v, 0);
+const bedTxt = (pr) => `${mm(pr.x)} × ${mm(pr.y)} × ${mm(pr.z)} mm`;
+function overTxt(o) {
+  const parts = [];
+  if (o.x > 0.5) parts.push(`X +${mm(o.x)}`);
+  if (o.y > 0.5) parts.push(`Y +${mm(o.y)}`);
+  if (o.z > 0.5) parts.push(`Z +${mm(o.z)}`);
+  return parts.join(', ') + ' mm';
+}
+function fitTitle(fit) {
+  if (!fit) return '';
+  if (fit.fits) return T('Mieści się na: {0}', { 0: fit.printers.filter((r) => r.fits).map((r) => r.printer.name).join(', ') });
+  return T('Większy niż obszar roboczy: {0} ({1})', { 0: fit.best.printer.name, 1: overTxt(fit.best.over) });
+}
+function fitWarnings(lines) {
+  const msgs = [];
+  for (const l of lines) {
+    if (!l.f || !l.qty) continue;
+    const fit = fitOf(l.f);
+    if (fit && !fit.fits) msgs.push(T('{0}: większy niż obszar roboczy drukarki {1} ({2})', { 0: l.name, 1: fit.best.printer.name, 2: overTxt(fit.best.over) }));
+  }
+  return msgs.length ? `<div class="stockwarn">${msgs.map((m) => `<div>⤢ ${esc(m)}</div>`).join('')}</div>` : '';
+}
+function plateTooBig(f, pl) {
+  const fit = fitOf(f);
+  return !!fit && !fit.fits && fit.printers.every((r) => r.plates.some((p) => p.id === pl.id && !p.fits));
+}
+function fitHtml(f) {
+  if (!f.viewable) return '';
+  if (!myPrinters().length) return fileStats(f) ? `<div class="fitbox muted"><span>${T('Ustaw swoją drukarkę, a sprawdzę, czy model mieści się na stole.')}</span><button class="linkbtn" id="dFitSet">${T('Ustaw drukarkę…')}</button></div>` : '';
+  const fit = fitOf(f);
+  if (!fit) return '';
+  const rows = fit.printers.map((r) => {
+    const bad = r.plates.filter((p) => !p.fits);
+    const why = r.fits ? (r.plates.some((p) => p.rotated) ? T('po obróceniu o 90°') : '') : (r.plates.length > 1 ? T('za duże płyty: {0}', { 0: bad.map((p) => p.id).join(', ') }) + ' · ' : '') + overTxt(r.over);
+    return `<div class="fit-row ${r.fits ? 'ok' : 'bad'}"><b>${r.fits ? '✓' : '✗'}</b><span>${esc(r.printer.name)} <small>${bedTxt(r.printer)}</small></span><em>${esc(why)}</em></div>`;
+  }).join('');
+  return `<div class="fitbox ${fit.fits ? 'ok' : 'bad'}"><div class="fit-h">${fit.fits ? T('Mieści się w obszarze roboczym') : T('Model jest większy niż obszar roboczy')}</div>${rows}</div>`;
+}
+
 function consume(parts, ref, label) {
   const agg = new Map();
   for (const p of parts) { if (!p.filament || !(p.grams > 0)) continue; agg.set(p.filament.id, (agg.get(p.filament.id) || 0) + p.grams); }
@@ -1644,6 +1713,7 @@ function renderUpdateBanner() {
   const i = $('#updInst'); if (i) i.onclick = () => api.updateInstall();
 }
 api.onUpdate((d) => { updateState = d; renderUpdateBanner(); if (d.state === 'error' && d.manual) toast(T('Nie udało się sprawdzić aktualizacji'), true); });
+api.onInboxError((d) => toast(d.reason === 'too-big' ? T('Archiwum {0} jest za duże po rozpakowaniu — pominięte.', { 0: d.file }) : T('Archiwum {0} jest uszkodzone — pominięte.', { 0: d.file }), true));
 api.onInboxAdded((d) => {
   toast(T('Nowe w „{0}”: {1} (z {2})', { 0: (S.inbox.target), 1: (d.added.length === 1 ? baseName(d.added[0]) : d.added.length + T(' pliki')), 2: (d.file) }), false, { label: T('Pokaż'), fn: () => setView({ special: 'folder', folder: S.inbox.target }) });
 });
@@ -1652,7 +1722,7 @@ api.onInboxAdded((d) => {
 function openSettings(tab = 'appearance') {
   return modal(`<div class="settings">
     <div class="s-head"><h3>${T('Ustawienia')}</h3>
-      <div class="tabs"><button data-tab="appearance">${T('Wygląd')}</button><button data-tab="pricing">${T('Wycena')}</button><button data-tab="filaments">${T('Filamenty')}</button><button data-tab="slicers">${T('Slicery')}</button><button data-tab="inbox">${T('Pobrane')}</button><button data-tab="business">${T('Oferta')}</button><button data-tab="backup">${T('Kopia')}</button><button data-tab="about">${T('O programie')}</button></div></div>
+      <div class="tabs"><button data-tab="appearance">${T('Wygląd')}</button><button data-tab="pricing">${T('Wycena')}</button><button data-tab="filaments">${T('Filamenty')}</button><button data-tab="printers">${T('Drukarki')}</button><button data-tab="slicers">${T('Slicery')}</button><button data-tab="inbox">${T('Pobrane')}</button><button data-tab="business">${T('Oferta')}</button><button data-tab="backup">${T('Kopia')}</button><button data-tab="about">${T('O programie')}</button></div></div>
     <div class="s-body" id="sBody"></div>
     <div class="btns"><button class="btn" id="sReset">${T('Przywróć domyślne')}</button><span style="flex:1"></span><button class="btn primary" id="sClose">${T('Gotowe')}</button></div>
   </div>`, (box, close) => {
@@ -1662,7 +1732,7 @@ function openSettings(tab = 'appearance') {
     const show = (t) => {
       current = t;
       box.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
-      ({ appearance: tabAppearance, pricing: tabPricing, filaments: tabFilaments, slicers: tabSlicers, inbox: tabInbox, business: tabBusiness, backup: tabBackup, about: tabAbout })[t](body);
+      ({ appearance: tabAppearance, pricing: tabPricing, filaments: tabFilaments, printers: tabPrinters, slicers: tabSlicers, inbox: tabInbox, business: tabBusiness, backup: tabBackup, about: tabAbout })[t](body);
       box.querySelector('#sReset').hidden = !['appearance', 'pricing', 'filaments'].includes(t);
     };
     box.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => show(b.dataset.tab));
@@ -1808,6 +1878,51 @@ function tabFilaments(body) {
   draw();
 }
 
+// ---------- ustawienia: drukarki ----------
+function printerOptions(selected = '') {
+  const brands = [...new Set(PRINTER_LIBRARY.map((p) => p.brand))];
+  return brands.map((b) => `<optgroup label="${esc(b)}">${PRINTER_LIBRARY.filter((p) => p.brand === b).map((p) => `<option value="${p.id}" ${p.id === selected ? 'selected' : ''}>${esc(printerLabel(p))} — ${p.bed.join(' × ')}</option>`).join('')}</optgroup>`).join('');
+}
+function printersChanged() { saveSettings(); renderGrid(); renderDetail(); if (st.special === 'order') renderOrder(); }
+function tabPrinters(body) {
+  if (!Array.isArray(S.printers)) S.printers = [];
+  const draw = () => {
+    const list = S.printers;
+    body.innerHTML = `<p class="hint" style="margin-top:0">${T('Obszar roboczy służy do sprawdzania, czy model zmieści się na stole. Modele większe od każdej z Twoich drukarek dostają znaczek ⤢, a w podglądzie 3D obrys obszaru roboczego robi się czerwony. Model można obrócić o 90° na stole – to też biorę pod uwagę.')}</p>
+      ${list.length ? `<table class="ftable ptable"><thead><tr><th>${T('Nazwa')}</th><th class="r">X</th><th class="r">Y</th><th class="r">${T('Z (wysokość)')}</th><th></th><th></th></tr></thead><tbody>
+      ${list.map((pr, k) => { const pre = printerById(pr.preset); return `<tr data-k="${k}"><td><input data-f="name" value="${esc(pr.name)}"></td>
+        ${['x', 'y', 'z'].map((a) => `<td class="r"><input type="number" min="1" step="1" data-f="${a}" value="${pr[a]}" style="width:72px"></td>`).join('')}
+        <td>${pre && pre.w ? `<button class="btn small" data-use="${k}" title="${T('Ustaw w wycenie moc {0} W i cenę drukarki', { 0: pre.w })}">${T('Użyj w wycenie')}</button>` : ''}</td>
+        <td><button class="icon-btn" data-del="${k}" title="${T('Usuń')}">✕</button></td></tr>`; }).join('')}</tbody></table>`
+      : `<div class="onb-path">${T('Nie dodano jeszcze żadnej drukarki — wymiary modeli nie są sprawdzane.')}</div>`}
+      <div class="label">${T('Dodaj drukarkę')}</div>
+      <div class="row"><select id="pAddSel" style="flex:1"><option value="">${T('— wybierz z biblioteki —')}</option>${printerOptions()}<option value="custom">${T('Własna drukarka (wpiszę wymiary)')}</option></select><button class="btn" id="pAdd">${T('Dodaj')}</button></div>
+      <p class="hint">${T('Wymiary z biblioteki pochodzą ze specyfikacji producentów. Jeśli Twoja drukarka ma inny stół (np. po modyfikacji), popraw liczby w tabeli.')}</p>
+      <label class="check"><input type="checkbox" id="pVol" ${S.appearance.showBuildVolume ? 'checked' : ''}> ${T('Pokazuj obrys obszaru roboczego w podglądzie 3D')}</label>`;
+    body.querySelectorAll('tr[data-k] input').forEach((inp) => inp.onchange = () => {
+      const pr = S.printers[+inp.closest('tr').dataset.k], k = inp.dataset.f;
+      if (k === 'name') pr.name = inp.value.trim() || pr.name;
+      else { const v = parseFloat(inp.value); if (Number.isFinite(v) && v > 0 && v < 5000) pr[k] = v; else { inp.value = pr[k]; toast(T('Nieprawidłowa wartość'), true); return; } }
+      printersChanged();
+    });
+    body.querySelectorAll('[data-del]').forEach((b) => b.onclick = () => { S.printers.splice(+b.dataset.del, 1); printersChanged(); draw(); });
+    body.querySelectorAll('[data-use]').forEach((b) => b.onclick = () => {
+      const pre = printerById(S.printers[+b.dataset.use].preset); if (!pre) return;
+      P().printerW = pre.w; const pp = presetPrice(pre, cur()); if (pp) P().printerPrice = pp;
+      saveSettings(); afterPricingChange(); toast(T('Ustawiono w wycenie: {0} W, cena drukarki {1}', { 0: pre.w, 1: pp ? fmtMoney(pp, cur()) : '—' }));
+    });
+    body.querySelector('#pAdd').onclick = () => {
+      const v = body.querySelector('#pAddSel').value;
+      if (!v) return;
+      if (v === 'custom') S.printers.push({ id: 'pr' + Date.now().toString(36), preset: null, name: T('Moja drukarka'), x: 220, y: 220, z: 250 });
+      else S.printers.push(printerFromPreset(printerById(v)));
+      printersChanged(); draw();
+    };
+    body.querySelector('#pVol').onchange = (e) => { S.appearance.showBuildVolume = e.target.checked; saveSettings(); const f = lib && lib.files.find((x) => x.rel === focused); if (f) applyBuildVolume(f); };
+  };
+  draw();
+}
+
 function tabSlicers(body) {
   const sl = S.slicers;
   const draw = () => {
@@ -1910,19 +2025,7 @@ async function tabAbout(body) {
 }
 
 // ---------- kreator pierwszego uruchomienia ----------
-// Moc to średni pobór w trakcie druku PLA, cena – orientacyjna cena zakupu w PL. Wszystko da się poprawić.
-const PRINTER_PRESETS = [
-  { id: 'a1mini', name: 'Bambu Lab A1 mini', w: 70, price: 1100 },
-  { id: 'a1', name: 'Bambu Lab A1', w: 95, price: 1700 },
-  { id: 'p1s', name: 'Bambu Lab P1S', w: 110, price: 2700 },
-  { id: 'x1c', name: 'Bambu Lab X1 Carbon', w: 120, price: 4500 },
-  { id: 'mk4s', name: 'Prusa MK4S', w: 80, price: 4300 },
-  { id: 'coreone', name: 'Prusa CORE One', w: 100, price: 5000 },
-  { id: 'ender3v3', name: 'Creality Ender 3 V3 (SE/KE)', w: 120, price: 900 },
-  { id: 'k1c', name: 'Creality K1C', w: 140, price: 1900 },
-  { id: 'neptune4', name: 'Elegoo Neptune 4 / 4 Pro', w: 120, price: 1000 },
-  { id: 'other', name: T('Inna drukarka'), w: null, price: null },
-];
+// Drukarki do wyboru w kreatorze: popularne jako przyciski, reszta biblioteki w liście (renderer/printers.js).
 function openOnboarding() {
   if (document.getElementById('onb')) return;
   const el = document.createElement('div');
@@ -1970,7 +2073,11 @@ function openOnboarding() {
     },
     printer: () => `<h2>${T('Jaką masz drukarkę?')}</h2>
       <p class="lead">${T('Na tej podstawie liczę prąd i zużycie drukarki. Wartości są orientacyjne, popraw je, jeśli znasz swoje.')}</p>
-      <div class="onb-chips">${PRINTER_PRESETS.map((x) => `<button class="chip ${printerSel === x.id ? 'on' : ''}" data-pr="${x.id}">${esc(x.name)}</button>`).join('')}</div>
+      <div class="onb-chips">${PRINTER_LIBRARY.filter((x) => x.popular).map((x) => `<button class="chip ${printerSel === x.id ? 'on' : ''}" data-pr="${x.id}">${esc(printerLabel(x))}</button>`).join('')}</div>
+      <div class="row onb-more"><select id="oPrSel"><option value="">${T('Inny model z biblioteki…')}</option>${printerOptions(printerById(printerSel) && !printerById(printerSel).popular ? printerSel : '')}<option value="custom" ${printerSel === 'custom' ? 'selected' : ''}>${T('Inna drukarka (wpiszę dane sam)')}</option></select></div>
+      <div class="fields onb-fields">
+        <label class="fld"><span>${T('Obszar roboczy (X × Y × Z)')}</span><span class="inp bed">${num('oBx', S.printers[0]?.x ?? '', '1', 64)}<i>×</i>${num('oBy', S.printers[0]?.y ?? '', '1', 64)}<i>×</i>${num('oBz', S.printers[0]?.z ?? '', '1', 64)}<em>mm</em></span></label>
+      </div>
       <div class="fields onb-fields">
         <label class="fld"><span>${T('Średni pobór mocy w trakcie druku')}</span><span class="inp">${num('oW', p.printerW, '1')}<em>W</em></span></label>
         <label class="fld"><span>${T('Cena drukarki')}</span><span class="inp">${num('oPP', p.printerPrice, '1')}<em>${c()}</em></span></label>
@@ -2023,7 +2130,7 @@ function openOnboarding() {
       <div class="onb-summary">
         <div><span>${T('Biblioteka')}</span><b>${lib ? esc(lib.root) : T('— (wybierzesz później)')}</b></div>
         <div><span>${T('Domyślny slicer')}</span><b>${d ? esc(d.name) : T('program domyślny systemu')}</b></div>
-        <div><span>${T('Drukarka')}</span><b>${printerSel ? esc(PRINTER_PRESETS.find((x) => x.id === printerSel).name) : T('własne ustawienia')} · ${P().printerW} W</b></div>
+        <div><span>${T('Drukarka')}</span><b>${S.printers[0] ? esc(S.printers[0].name) + ' · ' + bedTxt(S.printers[0]) : T('własne ustawienia')} · ${P().printerW} W</b></div>
         <div><span>${T('Filamenty')}</span><b>${T('{0} w bibliotece, domyślny: {1}', { 0: (S.filaments.length), 1: (esc(filLabel(defaultFilament()))) })}</b></div>
         <div><span>${T('Twój czas')}</span><b>${T('{0} {1}/h · marża {2}%', { 0: (P().hourRate), 1: (c()), 2: (Math.round(P().margin * 100)) })}</b></div>
       </div>
@@ -2048,12 +2155,23 @@ function openOnboarding() {
       $('#oSlDet').onclick = async () => { await api.setSettings(S); const r = await safe(() => api.slicersDetect()); if (r) { S.slicers = r; draw(); } };
     },
     printer: () => {
-      el.querySelectorAll('[data-pr]').forEach((b) => b.onclick = () => {
-        printerSel = b.dataset.pr;
-        const pr = PRINTER_PRESETS.find((x) => x.id === printerSel);
-        if (pr.w) { p.printerW = pr.w; p.printerPrice = pr.price; }
+      const pick = (id) => {
+        printerSel = id;
+        const pr = printerById(id);
+        if (pr) {
+          p.printerW = pr.w; const pp = presetPrice(pr, c()); if (pp) p.printerPrice = pp;
+          S.printers = [printerFromPreset(pr, S.printers[0]?.id)];
+        } else if (id === 'custom' && !S.printers.length) S.printers = [{ id: 'pr' + Date.now().toString(36), preset: null, name: T('Moja drukarka'), x: 220, y: 220, z: 250 }];
         draw();
-      });
+      };
+      el.querySelectorAll('[data-pr]').forEach((b) => b.onclick = () => pick(b.dataset.pr));
+      $('#oPrSel').onchange = (e) => e.target.value && pick(e.target.value);
+      ['x', 'y', 'z'].forEach((a) => { $('#oB' + a).oninput = (e) => {
+        const v = parseFloat(e.target.value);
+        if (!(Number.isFinite(v) && v > 0 && v < 5000)) return;
+        if (!S.printers.length) S.printers = [{ id: 'pr' + Date.now().toString(36), preset: null, name: T('Moja drukarka'), x: 220, y: 220, z: 250 }];
+        S.printers[0][a] = v;
+      }; });
       const f = (id, k) => { $(id).oninput = (e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v) && v >= 0) p[k] = v; }; };
       f('#oW', 'printerW'); f('#oPP', 'printerPrice'); f('#oPL', 'printerLife'); f('#oSv', 'servicePerH'); f('#oKwh', 'kWhPrice');
     },
@@ -2217,6 +2335,7 @@ function renderDetail() {
       <div class="stat"><div class="k">${T('Rozmiar pliku')}</div><div class="v">${fmtSize(f.size)}</div></div>
       <div class="stat wide"><div class="k">${T('Zmodyfikowano')}</div><div class="v" style="font-size:11.5px">${fmtDate(f.mtime)}</div></div>
     </div>
+    ${fitHtml(f)}
     ${pricingSectionHtml(f)}
     <div class="label">${T('Status')}</div>
     <div class="seg" id="dStatus">
@@ -2247,6 +2366,7 @@ function renderDetail() {
 
   $('#dName').onclick = () => renameItem(rel, false);
   $('#dPath').onclick = () => api.reveal(rel);
+  { const b = $('#dFitSet'); if (b) b.onclick = () => openSettings('printers'); }
   $('#dFav').onclick = () => setMetaMany([rel], (x) => ({ favorite: !x.favorite }));
   body.querySelectorAll('#dStatus [data-st]').forEach((b) => b.onclick = () => setStatus([rel], b.dataset.st));
   body.querySelectorAll('[data-rm]').forEach((x) => x.onclick = () => setMetaMany([rel], (mm) => ({ tags: (mm.tags || []).filter((t) => t !== x.dataset.rm) })));
@@ -2313,7 +2433,7 @@ function pricingSectionHtml(f) {
   if (!d.multi) {
     slotsHtml = `<div class="prow"><span>${T('Filament')}</span><span class="pfil">${swatch(d.filament)}<select data-slot="0">${filamentOptions(d.filamentSet ? d.filament.id : '', true)}</select></span></div>
       <div class="prow two">
-        <label><span>${T('Gramy')}</span><input id="pG" class="field sm" value="${manual.grams != null ? fmtNum(manual.grams, manual.grams % 1 ? 1 : 0) : ''}" placeholder="${d.grams != null ? fmtNum(d.grams, 0) + ' g' : 'np. 74'}"></label>
+        <label><span>${T('Gramy')}</span><input id="pG" class="field sm" value="${manual.grams != null ? fmtNum(manual.grams, manual.grams % 1 ? 1 : 0) : ''}" placeholder="${d.grams != null ? fmtNum(d.grams, 0) + ' g' : T('np. {0}', { 0: 74 })}"></label>
         <label><span>${T('Czas druku')}</span><input id="pT" class="field sm" value="${manual.minutes != null ? fmtDurShort(manual.minutes) : ''}" placeholder="${d.minutes != null ? fmtDurShort(d.minutes) : 'h:mm'}"></label>
       </div>`;
   } else {
@@ -2334,7 +2454,7 @@ function pricingSectionHtml(f) {
   const est = d.gramsSrc === 'szacunek' || d.gramsSrc === 'mieszane';
   const stockWarn = has ? stockWarnings(d.parts.map((p) => ({ filament: p.filament, grams: p.grams || 0 }))) : '';
   const platesHtml = d.plates > 1 ? `<div class="plates-box"><div class="mc-head"><span>${T('{0} płyty w pliku', { 0: (d.plates) })}</span><small>${T('każda płyta = osobny wydruk')}</small></div>
-      ${d.plateList.map((pl) => `<div class="plate-row" data-plate="${pl.index}"><b>${T('Płyta {0}', { 0: (pl.id) })}</b><span>${fmtNum(pl.x, 0)} × ${fmtNum(pl.y, 0)} × ${fmtNum(pl.z, 0)} mm</span><span>${pl.grams != null ? fmtNum(pl.grams, 1) + ' g' : fmtNum(pl.volume, 1) + ' cm³'}</span><span>${pl.minutes != null ? fmtDuration(pl.minutes) : ''}</span></div>`).join('')}</div>` : '';
+      ${d.plateList.map((pl) => `<div class="plate-row ${plateTooBig(f, pl) ? 'big' : ''}" data-plate="${pl.index}" ${plateTooBig(f, pl) ? `title="${T('Ta płyta nie mieści się na żadnej z Twoich drukarek')}"` : ''}><b>${T('Płyta {0}', { 0: (pl.id) })}</b><span>${fmtNum(pl.x, 0)} × ${fmtNum(pl.y, 0)} × ${fmtNum(pl.z, 0)} mm</span><span>${pl.grams != null ? fmtNum(pl.grams, 1) + ' g' : fmtNum(pl.volume, 1) + ' cm³'}</span><span>${pl.minutes != null ? fmtDuration(pl.minutes) : ''}</span></div>`).join('')}</div>` : '';
   return `<div class="label">${T('Wycena')} <button class="linkbtn" id="pSet">${T('ustawienia')}</button></div>
     <div class="pricebox">
       ${platesHtml}
@@ -2342,7 +2462,7 @@ function pricingSectionHtml(f) {
       ${hint ? `<div class="phint ${est ? 'est' : ''}">${esc(hint)}${d.gramsSrc === 'szacunek' ? T(' — dla dokładnej wyceny potnij model w slicerze') : ''}</div>` : ''}
       ${stockWarn}
       ${has ? breakdownHtml(r) + `<div class="phint">${T('jako osobne zamówienie (z czasem na kontakt i pakowanie)')}</div>`
-        : `<div class="phint">${f.viewable && f.ext !== 'gcode' ? T('Liczenie objętości…') : T('Brak danych — wpisz gramy i czas ze slicera.')}</div>`}
+        : `<div class="phint">${(ls.get(statsKey(f), null) || {}).failed ? T('Nie udało się odczytać modelu, więc nie policzę objętości. Wpisz gramy i czas ze slicera.') : f.viewable && f.ext !== 'gcode' ? T('Liczenie objętości…') : T('Brak danych — wpisz gramy i czas ze slicera.')}</div>`}
       <button class="btn" id="pAdd" style="margin-top:10px;width:100%">${T('+ Dodaj do wyceny zamówienia')}</button>
     </div>`;
 }
@@ -2424,6 +2544,8 @@ async function loadPreview(f) {
     try { storeParsedAnalysis(f, parsed); } catch (e) { console.warn(e); }
     viewer.show(parsed);
     viewer.setSlotColors(slotColors(f));
+    applyBuildVolume(f);
+    if (parsed.warnings && parsed.warnings.length) toast(parsed.warnings.join(' '), true);
     viewPlate = null;
     const vp = $('#vPlate');
     if (parsed.plates && parsed.plates.length > 1) { vp.innerHTML = `<option value="">${T('Wszystkie płyty ({0})', { 0: (parsed.plates.length) })}</option>` + parsed.plates.map((p) => `<option value="${p.index}">${T('Płyta {0}', { 0: (p.id) })}</option>`).join(''); vp.hidden = false; }
@@ -2443,9 +2565,21 @@ async function loadPreview(f) {
 }
 
 let viewPlate = null;
+/** Pokazuje w podglądzie obrys obszaru roboczego drukarki (czerwony, gdy model się nie mieści). */
+function applyBuildVolume(f) {
+  const fit = fitOf(f);
+  if (!fit || !S.appearance.showBuildVolume) { viewer.setBuildVolume(null); return; }
+  const r = fit.best;
+  if (r.plates.length > 1 && viewPlate == null) { viewer.setBuildVolume(null); return; } // obrys ma sens dla pojedynczej płyty
+  let plateOk = r.fits;
+  if (viewPlate != null) { const pl = (fileStats(f).plates || []).find((p) => p.index === viewPlate); const pr = pl && r.plates.find((p) => p.id === pl.id); if (pr) plateOk = pr.fits; }
+  const rot = r.plates.length === 1 ? r.plates[0].rotated : !!(r.plates.find((p) => p.id === ((fileStats(f).plates || []).find((q) => q.index === viewPlate) || {}).id) || {}).rotated;
+  viewer.setBuildVolume(r.printer, plateOk, rot);
+}
 function setPlateView(k) {
   viewPlate = k;
   viewer.showPlate && viewer.showPlate(k);
+  { const f = lib && lib.files.find((x) => x.rel === focused); if (f) applyBuildVolume(f); }
   document.querySelectorAll('#detailBody .plate-row').forEach((r) => r.classList.toggle('on', +r.dataset.plate === k));
   const ps = $('#vPlate'); if (ps) ps.value = k == null ? '' : String(k);
 }

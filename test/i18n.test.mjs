@@ -12,7 +12,7 @@ const unq = (s) => s.replace(/\\(.)/g, (m, c) => ({ n: '\n', t: '\t' }[c] ?? c))
 const keys = new Set();
 for (const f of ['app.js', 'viewer.js', 'mc.js']) {
   const src = fs.readFileSync(path.join(root, f), 'utf8');
-  for (const m of src.matchAll(/(?<![\w$.])T\('((?:[^'\\]|\\.)*)'/g)) keys.add(unq(m[1]));
+  for (const m of src.matchAll(/(?<![\w$.])(?:T|fail)\('((?:[^'\\]|\\.)*)'/g)) keys.add(unq(m[1]));
 }
 for (const m of fs.readFileSync(path.join(root, 'index.html'), 'utf8').matchAll(/data-i18n(?:-title|-placeholder)?="([^"]*)"/g)) keys.add(m[1]);
 const ph = (s) => (s.match(/\{\d+\}/g) || []).sort().join();

@@ -53,6 +53,8 @@ so everything keeps working in File Explorer, and the app picks up changes as th
 - **Thumbnails:** embedded by the slicer, taken from an image next to the model, or rendered. You can set the camera angle or use a photo of the finished print.
 - **Multicolour models:** reads filament assignments and painting from 3MF files (Bambu Studio, OrcaSlicer, PrusaSlicer) and T0…Tn tools from G-code. Each colour is shown separately.
 - **Multiple plates in one file:** detects plates in Bambu Studio / MakerWorld exports, previews a single plate and shows each plate's dimensions.
+- **Build volume check:** pick your printers from a built-in library of 34 models (Bambu Lab, Prusa, Creality, Elegoo, Anycubic, Qidi, Voron…) or enter the bed size yourself. Models that don't fit any of your printers get a ⤢ badge, plates are checked one by one, a 90° rotation on the bed is taken into account, and the 3D preview draws the build volume outline.
+- **Damaged files are handled gracefully:** empty, truncated or corrupted STL / 3MF / OBJ / PLY / G-code files get a ! badge and a clear explanation (e.g. "contains 58 of 5,184 triangles — interrupted download?") instead of breaking the app.
 
 ### 💰 Pricing
 - **The full cost of a print:** filament, electricity (including warm-up energy), printer depreciation and servicing, your time, a buffer for failed prints, margin and price rounding.
@@ -72,6 +74,7 @@ so everything keeps working in File Explorer, and the app picks up changes as th
 - **First-run wizard:** set up your folder, slicer, printer, prices and margin, with an example quote that updates live.
 - **Slicer integration:** detects installed slicers and opens a model in your chosen one with a single click. Only slicers you actually have are shown.
 - **Backups:** an automatic daily backup, plus export and import of settings, orders, clients and library metadata.
+  If the settings or library metadata file gets corrupted, ModelVault restores it from the latest backup and keeps the damaged copy instead of overwriting it.
 - **Languages:** English, Polish and German. The language is picked from your system and can be changed in the wizard or in Settings → Appearance.
 
 ## Screenshots
@@ -79,7 +82,7 @@ so everything keeps working in File Explorer, and the app picks up changes as th
 <table>
   <tr>
     <td width="50%"><img src="docs/screenshots/quote.png" alt="Order quote"><p align="center"><sub><b>Order quote</b>: many models, many spools, stock warnings</sub></p></td>
-    <td width="50%"><img src="docs/screenshots/plates.png" alt="Multiple plates in one file"><p align="center"><sub><b>Multiple plates in one STL</b>: each plate is priced as a separate print</sub></p></td>
+    <td width="50%"><img src="docs/screenshots/plates.png" alt="Multiple plates in one file"><p align="center"><sub><b>Multiple plates and build volume</b>: each plate is priced and checked against your printers</sub></p></td>
   </tr>
   <tr>
     <td><img src="docs/screenshots/orders.png" alt="Orders and statistics"><p align="center"><sub><b>Orders and statistics</b>: revenue, cost, profit</sub></p></td>
@@ -142,8 +145,10 @@ Until then you can run the app from source (see [Development](#development)).
 - **Library metadata** (tags, notes, statuses, collections, assigned spools) is stored in `.modelvault.json`
   in the library's root folder, so it travels with the library: to a USB stick, OneDrive or a NAS.
   If you move a file in File Explorer, its metadata is matched again by name and size.
-- **App settings** (filaments, stock, clients, orders) are stored in `%APPDATA%\ModelVault`,
+- **App settings** (filaments, stock, clients, orders, printers) are stored in `%APPDATA%\ModelVault`,
   together with the daily backups.
+- **ZIP archives** from the Downloads inbox are extracted with limits on total size and file count,
+  and entries that try to escape the target folder are skipped.
 
 <details>
 <summary><b>Keyboard shortcuts</b></summary>
@@ -172,7 +177,7 @@ git clone https://github.com/K-Ptak/ModelVault.git
 cd ModelVault
 npm install      # dependencies + copies the required three.js modules to renderer/vendor
 npm start        # run the app
-npm test         # logic tests: pricing, multicolour files, plate detection, translations
+npm test         # tests: pricing, multicolour files, plates, damaged files, build volume, translations
 npm run dist     # build the installer and ZIP locally (dist/ folder)
 ```
 
@@ -192,6 +197,7 @@ UI text is written in Polish in the source and wrapped in `T('…')`. That Polis
 ```
 ├── main.js               # main process: file system, metadata, slicers, backups, updates, PDF
 ├── preload.js            # secure IPC bridge between the window and the main process
+├── core/safe.js          # safe loading of data files, ZIP extraction limits
 ├── renderer/
 │   ├── index.html        # UI
 │   ├── app.js            # UI logic: library, pricing, orders, stock, wizard
@@ -199,6 +205,7 @@ UI text is written in Polish in the source and wrapped in `T('…')`. That Polis
 │   ├── mc.js             # multicolour parsers: 3MF, G-code toolpaths
 │   ├── plates.js         # detection of multiple plates in one file
 │   ├── pricing.js        # pricing and reading slicer data
+│   ├── printers.js       # printer library and build volume check
 │   ├── i18n.js           # language selection and translation helper
 │   ├── locales/          # translations (en, de)
 │   └── styles.css

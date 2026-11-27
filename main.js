@@ -9,6 +9,7 @@ const fsp = fs.promises;
 const crypto = require('crypto');
 const os = require('os');
 const { spawn } = require('child_process');
+const safe = require('./core/safe');
 let fflate = null; try { fflate = require('fflate'); } catch {}
 let autoUpdater = null; try { ({ autoUpdater } = require('electron-updater')); } catch {}
 
@@ -29,6 +30,7 @@ let selfWriteUntil = 0;
 const MT = {
   en: {
     'Ścieżka poza biblioteką': 'Path is outside the library',
+    'Plik kopii jest uszkodzony': 'The backup file is damaged',
     'Wybierz folder z modelami 3D': 'Choose the folder with your 3D models',
     'Nie można przenieść folderu do niego samego': 'A folder cannot be moved into itself',
     'Niedozwolona nazwa': 'Invalid name',
@@ -47,6 +49,7 @@ const MT = {
   },
   de: {
     'Ścieżka poza biblioteką': 'Pfad liegt außerhalb der Bibliothek',
+    'Plik kopii jest uszkodzony': 'Die Sicherungsdatei ist beschädigt',
     'Wybierz folder z modelami 3D': 'Ordner mit 3D-Modellen auswählen',
     'Nie można przenieść folderu do niego samego': 'Ein Ordner kann nicht in sich selbst verschoben werden',
     'Niedozwolona nazwa': 'Ungültiger Name',
@@ -72,7 +75,7 @@ const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
 // Domyślne ustawienia = wartości z arkusza wyceny użytkownika
 const DEFAULT_SETTINGS = {
   version: 1,
-  appearance: { modelColor: '#f2a03d', useFilamentColor: true },
+  appearance: { modelColor: '#f2a03d', useFilamentColor: true, showBuildVolume: true },
   pricing: {
     currency: 'zł',
     printerW: 120,          // moc drukarki w trakcie druku (W)
@@ -112,6 +115,7 @@ const DEFAULT_SETTINGS = {
   backup: { auto: true, keep: 14, last: 0 },
   updates: { auto: true },
   onboardingDone: false,
+  printers: [], // [{ id, preset, name, x, y, z }] – obszar roboczy w mm
   filaments: [
     { id: 'f1', name: 'PlastSpaw PLA+', color: 'beżowy', hex: '#d8c4a2', type: 'PLA', pricePerKg: 45, density: 1.24, spoolWeight: 1000, remaining: null },
     { id: 'f2', name: 'PlastSpaw PLA+', color: 'zielony', hex: '#3f9c4f', type: 'PLA', pricePerKg: 45, density: 1.24, spoolWeight: 1000, remaining: null },
@@ -124,10 +128,20 @@ const DEFAULT_SETTINGS = {
   order: { name: '', items: [] },
 };
 let settings = null;
+const recovery = []; // co trzeba było odtworzyć przy starcie (uszkodzone pliki)
 function loadSettingsFromObject() { const s = settings; settings = null; loadSettings(s); }
 function loadSettings(given) {
   let s = given || null;
-  if (!given) { try { s = JSON.parse(fs.readFileSync(settingsPath(), 'utf8')); } catch {} }
+  if (!given) {
+    const r = safe.readJsonSafe(settingsPath(), (d) => d && typeof d === 'object' && !Array.isArray(d));
+    s = r.data;
+    if (r.state === 'broken') {
+      const b = safe.latestValidBackup(backupDir());
+      if (b) s = b.data.settings;
+      recovery.push({ what: 'settings', from: b ? b.name : null, brokenCopy: r.brokenCopy || null });
+      console.warn('settings.json uszkodzony', r.error, '→', b ? b.name : 'domyślne');
+    }
+  }
   const d = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
   settings = s ? {
     ...d, ...s,
@@ -137,6 +151,7 @@ function loadSettings(given) {
     orders: Array.isArray(s.orders) ? s.orders : [],
     stockLog: Array.isArray(s.stockLog) ? s.stockLog : [],
     clients: Array.isArray(s.clients) ? s.clients : [],
+    printers: Array.isArray(s.printers) ? s.printers.filter((p) => p && p.x > 0 && p.y > 0 && p.z > 0) : [],
     business: { ...d.business, ...(s.business || {}) },
     queue: { ...d.queue, ...(s.queue || {}) },
     slicers: { ...d.slicers, ...(s.slicers || {}) },
@@ -199,10 +214,16 @@ async function moveFs(src, dst) {
 async function loadMeta() {
   meta = { version: 1, files: {} };
   if (!root) return;
-  try {
-    const m = JSON.parse(await fsp.readFile(path.join(root, META_FILE), 'utf8'));
-    if (m && m.files) meta = m;
-  } catch { /* brak pliku – OK */ }
+  const r = safe.readJsonSafe(path.join(root, META_FILE), safe.isMetaData);
+  if (r.state === 'ok') meta = r.data;
+  else if (r.state === 'broken') {
+    const b = safe.latestValidBackup(backupDir());
+    const fromBackup = b && b.data.library && b.data.library.root === root && safe.isMetaData(b.data.library.meta);
+    if (fromBackup) meta = b.data.library.meta;
+    recovery.push({ what: 'library', from: fromBackup ? b.name : null, brokenCopy: r.brokenCopy || null });
+    console.warn('.modelvault.json uszkodzony', r.error);
+    saveMetaSoon();
+  }
 }
 let saveTimer = null;
 function saveMetaSoon() {
@@ -469,6 +490,7 @@ handle('settings:set', async (next) => {
   saveSettings();
   return true;
 });
+handle('app:recovery', async () => recovery.splice(0));
 handle('settings:defaults', async () => JSON.parse(JSON.stringify(DEFAULT_SETTINGS)));
 handle('clipboard:write', async (text) => { clipboard.writeText(String(text)); return true; });
 handle('file:save', async (defaultName, content) => {
@@ -516,7 +538,7 @@ async function maybeAutoBackup() {
   if (Date.now() - (settings.backup.last || 0) > 20 * 3600 * 1000) { try { await createBackup('auto'); } catch (e) { console.warn('backup', e); } }
 }
 function applyBackupData(data, withLibrary) {
-  if (!data || data.app !== 'ModelVault' || !data.settings) throw new Error(mt('To nie jest kopia ModelVault'));
+  if (!safe.isBackupData(data)) throw new Error(mt('To nie jest kopia ModelVault'));
   const keepSlicers = settings.slicers;
   settings = data.settings; loadSettingsFromObject();
   if (!settings.slicers || !settings.slicers.list) settings.slicers = keepSlicers;
@@ -531,7 +553,7 @@ handle('backup:list', async () => {
 });
 handle('backup:create', async () => createBackup('manual'));
 handle('backup:restore', async (name, withLibrary) => {
-  const data = JSON.parse(await fsp.readFile(path.join(backupDir(), path.basename(name)), 'utf8'));
+  let data; try { data = JSON.parse(await fsp.readFile(path.join(backupDir(), path.basename(name)), 'utf8')); } catch { throw new Error(mt('Plik kopii jest uszkodzony')); }
   await createBackup('przed przywróceniem');
   await applyBackupData(data, withLibrary);
   return settings;
@@ -545,7 +567,7 @@ handle('backup:export', async () => {
 handle('backup:import', async (withLibrary) => {
   const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: mt('Kopia ModelVault'), extensions: ['json'] }] });
   if (r.canceled || !r.filePaths[0]) return null;
-  const data = JSON.parse(await fsp.readFile(r.filePaths[0], 'utf8'));
+  let data; try { data = JSON.parse(await fsp.readFile(r.filePaths[0], 'utf8')); } catch { throw new Error(mt('Plik kopii jest uszkodzony')); }
   await createBackup('przed importem');
   await applyBackupData(data, withLibrary);
   return settings;
@@ -671,14 +693,25 @@ async function processInboxFile(abs) {
     if (!ib.unzip || !fflate || st.size > 600 * 1048576) return null;
     const buf = await fsp.readFile(abs);
     let entries;
-    try { entries = fflate.unzipSync(new Uint8Array(buf), { filter: (f) => { const e = extOf(f.name); return INBOX_EXT.has(e) || IMAGES.has(e) || /\.(txt|md|pdf)$/i.test(f.name); } }); } catch { return null; }
+    const filter = safe.zipFilter((n) => { const e = extOf(n); return INBOX_EXT.has(e) || IMAGES.has(e) || /\.(txt|md|pdf)$/i.test(n); });
+    try { entries = fflate.unzipSync(new Uint8Array(buf), { filter }); } catch (e) {
+      console.warn('zip', name, e.message);
+      ib.processed[key] = st.mtimeMs; saveSettings();
+      win && win.webContents.send('inbox:error', { file: name, reason: 'corrupt' });
+      return null;
+    }
+    if (filter.exceeded) {
+      ib.processed[key] = st.mtimeMs; saveSettings();
+      win && win.webContents.send('inbox:error', { file: name, reason: 'too-big' });
+      return null;
+    }
     const models = Object.keys(entries).filter((n) => INBOX_EXT.has(extOf(n)) && !n.endsWith('/'));
     if (!models.length) { ib.processed[key] = st.mtimeMs; saveSettings(); return null; }
     const dest = await uniquePath(path.join(target, path.basename(name, '.zip').replace(/[:*?"<>|]/g, '_')));
     for (const [n, data] of Object.entries(entries)) {
       if (n.endsWith('/') || n.startsWith('__MACOSX')) continue;
-      const out = safeJoin(dest, n);
-      if (!out.startsWith(dest + path.sep)) continue;
+      const out = safe.safeEntryPath(dest, n);
+      if (!out) continue;
       await fsp.mkdir(path.dirname(out), { recursive: true });
       await fsp.writeFile(out, data);
       if (INBOX_EXT.has(extOf(n))) added.push(toRel(out));

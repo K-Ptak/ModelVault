@@ -384,7 +384,7 @@ export function parseGcodePaths(text, maxSeg = 3_000_000) {
     if (cmd === 'M82') { absE = true; continue; }
     if (cmd === 'M83') { absE = false; continue; }
     const p = {};
-    for (let k = 1; k < parts.length; k++) { const s = parts[k]; if (s.length > 1) p[s[0].toUpperCase()] = parseFloat(s.slice(1)); }
+    for (let k = 1; k < parts.length; k++) { const s = parts[k]; if (s.length > 1) { const v = parseFloat(s.slice(1)); if (Number.isFinite(v)) p[s[0].toUpperCase()] = v; } }
     if (cmd === 'G92') { if (p.X != null) x = p.X; if (p.Y != null) y = p.Y; if (p.Z != null) z = p.Z; if (p.E != null) e = p.E; continue; }
     const isMove = cmd === 'G0' || cmd === 'G1' || cmd === 'G00' || cmd === 'G01';
     const isArc = cmd === 'G2' || cmd === 'G3' || cmd === 'G02' || cmd === 'G03';
@@ -392,6 +392,7 @@ export function parseGcodePaths(text, maxSeg = 3_000_000) {
     const nx = p.X != null ? (abs ? p.X : x + p.X) : x;
     const ny = p.Y != null ? (abs ? p.Y : y + p.Y) : y;
     const nz = p.Z != null ? (abs ? p.Z : z + p.Z) : z;
+    if (Math.abs(nx) > 1e5 || Math.abs(ny) > 1e5 || Math.abs(nz) > 1e5) continue; // uszkodzona linia – pomijamy
     let de = 0;
     if (p.E != null) { if (absE) { de = p.E - e; e = p.E; } else { de = p.E; e += p.E; } }
     const extruding = de > 0.00001;
