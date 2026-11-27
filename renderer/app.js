@@ -1,7 +1,7 @@
 import { Viewer, parseModel, renderThumbnail, computeStats, extract3mfThumbnail, setModelColor, slotGeomStats, PALETTE, VIEW_PRESETS } from './viewer.js';
 import { gcodeColorInfo, hexDist } from './mc.js';
 import { T, LANG, LANGS, LOCALE, setLang } from './i18n.js';
-import { PRINTER_LIBRARY, printerById, printerLabel, presetPrice, printerFromPreset, checkModelFit } from './printers.js';
+import { PRINTER_LIBRARY, printerById, printerLabel, presetPrice, printerFromPreset, checkModelFit, MMU_LIBRARY, MMU_PROFILES, mmuById, mmuOptionsFor, printerSlots, checkColors } from './printers.js';
 import { priceItems, slicerInfoFromGcode, slicerInfoFrom3mf, fmtMoney, fmtNum, fmtDuration, parseDuration } from './pricing.js';
 
 const api = window.api;
@@ -1069,12 +1069,24 @@ function fitTitle(fit) {
   if (fit.fits) return T('Mieści się na: {0}', { 0: fit.printers.filter((r) => r.fits).map((r) => r.printer.name).join(', ') });
   return T('Większy niż obszar roboczy: {0} ({1})', { 0: fit.best.printer.name, 1: overTxt(fit.best.over) });
 }
+const fileColors = (f) => { const c = ls.get(colorsKey(f), null); return c && c.slots ? c.slots.length : 1; };
+/** Ostrzeżenie o kolorach: null gdy wszystko OK. */
+function colorIssue(f) {
+  const r = checkColors(fileColors(f), myPrinters());
+  if (!r || r.ok) return null;
+  const n = fileColors(f);
+  return r.manual
+    ? T('Liczba kolorów: {0}. Żadna z Twoich drukarek nie ma AMS – kolory trzeba zmieniać ręcznie.', { 0: n })
+    : T('Liczba kolorów: {0}, a najwięcej miejsc na filament ma {1} ({2}).', { 0: n, 1: printerTitle(r.best), 2: r.maxSlots });
+}
 function fitWarnings(lines) {
   const msgs = [];
   for (const l of lines) {
     if (!l.f || !l.qty) continue;
     const fit = fitOf(l.f);
     if (fit && !fit.fits) msgs.push(T('{0}: większy niż obszar roboczy drukarki {1} ({2})', { 0: l.name, 1: fit.best.printer.name, 2: overTxt(fit.best.over) }));
+    const ci = colorIssue(l.f);
+    if (ci) msgs.push(`${l.name} – ${ci}`);
   }
   return msgs.length ? `<div class="stockwarn">${msgs.map((m) => `<div>⤢ ${esc(m)}</div>`).join('')}</div>` : '';
 }
@@ -1090,9 +1102,12 @@ function fitHtml(f) {
   const rows = fit.printers.map((r) => {
     const bad = r.plates.filter((p) => !p.fits);
     const why = r.fits ? (r.plates.some((p) => p.rotated) ? T('po obróceniu o 90°') : '') : (r.plates.length > 1 ? T('za duże płyty: {0}', { 0: bad.map((p) => p.id).join(', ') }) + ' · ' : '') + overTxt(r.over);
-    return `<div class="fit-row ${r.fits ? 'ok' : 'bad'}"><b>${r.fits ? '✓' : '✗'}</b><span>${esc(r.printer.name)} <small>${bedTxt(r.printer)}</small></span><em>${esc(why)}</em></div>`;
+    return `<div class="fit-row ${r.fits ? 'ok' : 'bad'}"><b>${r.fits ? '✓' : '✗'}</b><span>${esc(printerTitle(r.printer))} <small>${bedTxt(r.printer)}</small></span><em>${esc(why)}</em></div>`;
   }).join('');
-  return `<div class="fitbox ${fit.fits ? 'ok' : 'bad'}"><div class="fit-h">${fit.fits ? T('Mieści się w obszarze roboczym') : T('Model jest większy niż obszar roboczy')}</div>${rows}</div>`;
+  const ci = colorIssue(f);
+  const cr = checkColors(fileColors(f), myPrinters());
+  const colorRow = cr ? `<div class="fit-row ${ci ? 'warn' : 'ok'}"><b>${ci ? '!' : '✓'}</b><span>${ci ? esc(ci) : esc(T('Liczba kolorów: {0} – {1} zmieni je automatycznie.', { 0: fileColors(f), 1: printerTitle(cr.best) }))}</span></div>` : '';
+  return `<div class="fitbox ${fit.fits ? 'ok' : 'bad'}"><div class="fit-h">${fit.fits ? T('Mieści się w obszarze roboczym') : T('Model jest większy niż obszar roboczy')}</div>${rows}${colorRow}</div>`;
 }
 
 function consume(parts, ref, label) {
@@ -1884,40 +1899,94 @@ function printerOptions(selected = '') {
   return brands.map((b) => `<optgroup label="${esc(b)}">${PRINTER_LIBRARY.filter((p) => p.brand === b).map((p) => `<option value="${p.id}" ${p.id === selected ? 'selected' : ''}>${esc(printerLabel(p))} — ${p.bed.join(' × ')}</option>`).join('')}</optgroup>`).join('');
 }
 function printersChanged() { saveSettings(); renderGrid(); renderDetail(); if (st.special === 'order') renderOrder(); }
+const mmuName = (m) => (m ? m.name || T('Inny system') : '');
+/** „Bambu Lab P1S + AMS ×2” */
+function printerTitle(pr) {
+  const m = pr.mmu && mmuById(pr.mmu.id);
+  if (!m) return pr.name;
+  const units = Math.max(1, Number(pr.mmu.units) || 1);
+  return `${pr.name} + ${mmuName(m)}${!m.custom && m.unitWord !== 'tools' && units > 1 ? ' ×' + units : ''}`;
+}
+function newPrinter(presetId) {
+  const pre = printerById(presetId);
+  return pre ? printerFromPreset(pre) : { id: 'pr' + Date.now().toString(36), preset: null, name: T('Moja drukarka'), x: 220, y: 220, z: 250 };
+}
+/** Ustawia w wycenie moc i cenę drukarki oraz typowe wartości zmian koloru dla jej systemu wielomateriałowego. */
+function usePrinterInPricing(pr, quiet = false) {
+  const pre = printerById(pr.preset);
+  const m = pr.mmu && mmuById(pr.mmu.id);
+  const p = P();
+  if (pre) { p.printerW = pre.w; const pp = presetPrice(pre, cur()); if (pp) p.printerPrice = pp; }
+  if (m) { const prof = MMU_PROFILES[m.kind]; p.purgePerChange = prof.purge; p.changeTimeSec = prof.changeSec; }
+  saveSettings(); afterPricingChange();
+  if (!quiet) toast(T('Ustawiono w wycenie: {0}', { 0: [pre ? `${pre.w} W, ${T('cena drukarki')} ${fmtMoney(presetPrice(pre, cur()) || p.printerPrice, cur())}` : '', m ? `${T('zmiana koloru')} ${fmtNum(p.purgePerChange, 1)} g / ${p.changeTimeSec} s` : ''].filter(Boolean).join(' · ') }));
+}
+
+/** Edytor listy drukarek (kreator i ustawienia). onChange(kind) – 'list' gdy zmienia się układ, 'value' przy wpisywaniu. */
+function printersEditorHtml(opts = {}) {
+  const list = S.printers;
+  const cards = list.map((pr, k) => {
+    const opt = mmuOptionsFor(pr);
+    const m = pr.mmu && mmuById(pr.mmu.id);
+    const units = m && !m.custom ? Math.max(1, Math.min(m.maxUnits, Number(pr.mmu.units) || 1)) : 1;
+    const unitSel = m && !m.custom && m.maxUnits > 1 ? `<label class="mmu-units">${m.unitWord === 'tools' ? T('Liczba głowic') : T('Liczba jednostek')} <select data-mu="${k}">${Array.from({ length: m.maxUnits }, (_, i) => `<option ${i + 1 === units ? 'selected' : ''}>${i + 1}</option>`).join('')}</select></label>` : '';
+    const custom = m && m.custom ? `<label class="mmu-units">${T('Miejsc na filament')} <input type="number" min="2" max="64" step="1" data-ms="${k}" value="${Number(pr.mmu.slots) || 4}" style="width:60px"></label>` : '';
+    const slots = printerSlots(pr);
+    return `<div class="pcard" data-k="${k}">
+      <div class="pc-top"><input class="pc-name" data-f="name" value="${esc(pr.name)}" spellcheck="false"><button class="icon-btn" data-del="${k}" title="${T('Usuń')}">✕</button></div>
+      <div class="pc-row"><span>${T('Obszar roboczy (X × Y × Z)')}</span><span class="inp bed">${['x', 'y', 'z'].map((a) => `<input type="number" min="1" step="1" data-f="${a}" value="${pr[a]}">`).join('<i>×</i>')}<em>mm</em></span></div>
+      <div class="pc-row mmu"><span>${T('System wielomateriałowy')}</span><div class="onb-chips">
+        <button class="chip ${!m ? 'on' : ''}" data-mmu="" data-k="${k}">${T('Brak')}</button>
+        ${opt.map((o) => `<button class="chip ${m && m.id === o.id ? 'on' : ''}" data-mmu="${o.id}" data-k="${k}">${esc(mmuName(o))}</button>`).join('')}</div></div>
+      ${m ? `<div class="pc-row sub">${unitSel}${custom}<b class="slots">${T('Miejsca na filament: {0}', { 0: slots })}</b>${m.kind === 'tool' ? `<small>${T('zmieniacz głowic – prawie bez purge')}</small>` : ''}</div>` : `<div class="pc-row sub"><small>${T('Bez AMS modele wielokolorowe wymagają ręcznej zmiany filamentu (pauza na warstwie).')}</small></div>`}
+      ${opts.useBtn !== false && (printerById(pr.preset) || m) ? `<div class="pc-row sub"><button class="btn small" data-use="${k}">${T('Użyj w wycenie')}</button></div>` : ''}
+    </div>`;
+  }).join('');
+  return `<div class="pcards">${cards || `<div class="onb-path">${T('Nie dodano jeszcze żadnej drukarki — wymiary modeli nie są sprawdzane.')}</div>`}</div>
+    <div class="label">${list.length ? T('Dodaj kolejną drukarkę') : T('Dodaj drukarkę')}</div>
+    <div class="onb-chips">${PRINTER_LIBRARY.filter((x) => x.popular).map((x) => `<button class="chip" data-add="${x.id}">+ ${esc(printerLabel(x))}</button>`).join('')}</div>
+    <div class="row onb-more"><select id="pAddSel"><option value="">${T('Inny model z biblioteki…')}</option>${printerOptions()}<option value="custom">${T('Inna drukarka (wpiszę dane sam)')}</option></select></div>`;
+}
+function bindPrintersEditor(root, onChange) {
+  const changed = (kind) => onChange && onChange(kind);
+  root.querySelectorAll('.pcard [data-f]').forEach((inp) => inp.onchange = () => {
+    const pr = S.printers[+inp.closest('.pcard').dataset.k], k = inp.dataset.f;
+    if (k === 'name') pr.name = inp.value.trim() || pr.name;
+    else { const v = parseFloat(inp.value); if (Number.isFinite(v) && v > 0 && v < 5000) pr[k] = v; else { inp.value = pr[k]; toast(T('Nieprawidłowa wartość'), true); return; } }
+    changed('value');
+  });
+  root.querySelectorAll('[data-del]').forEach((b) => b.onclick = () => { S.printers.splice(+b.dataset.del, 1); changed('list'); });
+  root.querySelectorAll('[data-mmu]').forEach((b) => b.onclick = () => {
+    const pr = S.printers[+b.dataset.k], id = b.dataset.mmu;
+    const had = !!pr.mmu;
+    pr.mmu = id ? { id, units: 1, ...(mmuById(id).custom ? { slots: 4 } : {}) } : null;
+    // pierwszy AMS w konfiguracji: typowe wartości zmian koloru do wyceny
+    if (id && !had && S.printers.filter((x) => x.mmu).length === 1) { const prof = MMU_PROFILES[mmuById(id).kind]; P().purgePerChange = prof.purge; P().changeTimeSec = prof.changeSec; }
+    changed('list');
+  });
+  root.querySelectorAll('[data-mu]').forEach((sel) => sel.onchange = () => { S.printers[+sel.dataset.mu].mmu.units = +sel.value; changed('list'); });
+  root.querySelectorAll('[data-ms]').forEach((inp) => inp.onchange = () => { const v = Math.round(+inp.value); if (v >= 2 && v <= 64) S.printers[+inp.dataset.ms].mmu.slots = v; changed('list'); });
+  root.querySelectorAll('[data-use]').forEach((b) => b.onclick = () => { usePrinterInPricing(S.printers[+b.dataset.use]); changed('pricing'); });
+  const add = (id) => {
+    const first = !S.printers.length;
+    const pr = newPrinter(id);
+    S.printers.push(pr);
+    if (first) usePrinterInPricing(pr, true);
+    changed('list');
+  };
+  root.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => add(b.dataset.add));
+  const sel = root.querySelector('#pAddSel'); if (sel) sel.onchange = () => sel.value && add(sel.value === 'custom' ? null : sel.value);
+}
+
 function tabPrinters(body) {
   if (!Array.isArray(S.printers)) S.printers = [];
   const draw = () => {
-    const list = S.printers;
     body.innerHTML = `<p class="hint" style="margin-top:0">${T('Obszar roboczy służy do sprawdzania, czy model zmieści się na stole. Modele większe od każdej z Twoich drukarek dostają znaczek ⤢, a w podglądzie 3D obrys obszaru roboczego robi się czerwony. Model można obrócić o 90° na stole – to też biorę pod uwagę.')}</p>
-      ${list.length ? `<table class="ftable ptable"><thead><tr><th>${T('Nazwa')}</th><th class="r">X</th><th class="r">Y</th><th class="r">${T('Z (wysokość)')}</th><th></th><th></th></tr></thead><tbody>
-      ${list.map((pr, k) => { const pre = printerById(pr.preset); return `<tr data-k="${k}"><td><input data-f="name" value="${esc(pr.name)}"></td>
-        ${['x', 'y', 'z'].map((a) => `<td class="r"><input type="number" min="1" step="1" data-f="${a}" value="${pr[a]}" style="width:72px"></td>`).join('')}
-        <td>${pre && pre.w ? `<button class="btn small" data-use="${k}" title="${T('Ustaw w wycenie moc {0} W i cenę drukarki', { 0: pre.w })}">${T('Użyj w wycenie')}</button>` : ''}</td>
-        <td><button class="icon-btn" data-del="${k}" title="${T('Usuń')}">✕</button></td></tr>`; }).join('')}</tbody></table>`
-      : `<div class="onb-path">${T('Nie dodano jeszcze żadnej drukarki — wymiary modeli nie są sprawdzane.')}</div>`}
-      <div class="label">${T('Dodaj drukarkę')}</div>
-      <div class="row"><select id="pAddSel" style="flex:1"><option value="">${T('— wybierz z biblioteki —')}</option>${printerOptions()}<option value="custom">${T('Własna drukarka (wpiszę wymiary)')}</option></select><button class="btn" id="pAdd">${T('Dodaj')}</button></div>
+      <p class="hint">${T('System wielomateriałowy (AMS, MMU, CFS…) określa, ile kolorów drukarka zmieni sama. Modele z większą liczbą kolorów dostaną ostrzeżenie.')}</p>
+      ${printersEditorHtml()}
       <p class="hint">${T('Wymiary z biblioteki pochodzą ze specyfikacji producentów. Jeśli Twoja drukarka ma inny stół (np. po modyfikacji), popraw liczby w tabeli.')}</p>
       <label class="check"><input type="checkbox" id="pVol" ${S.appearance.showBuildVolume ? 'checked' : ''}> ${T('Pokazuj obrys obszaru roboczego w podglądzie 3D')}</label>`;
-    body.querySelectorAll('tr[data-k] input').forEach((inp) => inp.onchange = () => {
-      const pr = S.printers[+inp.closest('tr').dataset.k], k = inp.dataset.f;
-      if (k === 'name') pr.name = inp.value.trim() || pr.name;
-      else { const v = parseFloat(inp.value); if (Number.isFinite(v) && v > 0 && v < 5000) pr[k] = v; else { inp.value = pr[k]; toast(T('Nieprawidłowa wartość'), true); return; } }
-      printersChanged();
-    });
-    body.querySelectorAll('[data-del]').forEach((b) => b.onclick = () => { S.printers.splice(+b.dataset.del, 1); printersChanged(); draw(); });
-    body.querySelectorAll('[data-use]').forEach((b) => b.onclick = () => {
-      const pre = printerById(S.printers[+b.dataset.use].preset); if (!pre) return;
-      P().printerW = pre.w; const pp = presetPrice(pre, cur()); if (pp) P().printerPrice = pp;
-      saveSettings(); afterPricingChange(); toast(T('Ustawiono w wycenie: {0} W, cena drukarki {1}', { 0: pre.w, 1: pp ? fmtMoney(pp, cur()) : '—' }));
-    });
-    body.querySelector('#pAdd').onclick = () => {
-      const v = body.querySelector('#pAddSel').value;
-      if (!v) return;
-      if (v === 'custom') S.printers.push({ id: 'pr' + Date.now().toString(36), preset: null, name: T('Moja drukarka'), x: 220, y: 220, z: 250 });
-      else S.printers.push(printerFromPreset(printerById(v)));
-      printersChanged(); draw();
-    };
+    bindPrintersEditor(body, (kind) => { printersChanged(); if (kind !== 'value') draw(); });
     body.querySelector('#pVol').onchange = (e) => { S.appearance.showBuildVolume = e.target.checked; saveSettings(); const f = lib && lib.files.find((x) => x.rel === focused); if (f) applyBuildVolume(f); };
   };
   draw();
@@ -2036,7 +2105,6 @@ function openOnboarding() {
   const steps = ['welcome', 'library', 'slicer', 'printer', 'filaments', 'pricing', 'look', 'extras', 'done'];
   const titles = { welcome: T('Witaj'), library: T('Biblioteka'), slicer: T('Slicer'), printer: T('Drukarka i prąd'), filaments: T('Filamenty'), pricing: T('Twój czas i cena'), look: T('Wygląd'), extras: T('Automatyzacje'), done: T('Gotowe') };
   let i = 0;
-  let printerSel = S.onboardingPrinter || null;
   const c = () => esc(cur());
   const num = (id, val, step = 'any', w = 110) => `<input type="number" step="${step}" min="0" id="${id}" value="${val}" style="width:${w}px">`;
 
@@ -2071,21 +2139,20 @@ function openOnboarding() {
         : `<div class="onb-path">${T('Nie znalazłem slicera w typowych miejscach.')}</div>`}
       <div class="btns" style="justify-content:flex-start"><button class="btn" id="oSlAdd">${T('+ Wskaż inny slicer (.exe)…')}</button><button class="btn" id="oSlDet">${T('Wykryj ponownie')}</button></div>`;
     },
-    printer: () => `<h2>${T('Jaką masz drukarkę?')}</h2>
-      <p class="lead">${T('Na tej podstawie liczę prąd i zużycie drukarki. Wartości są orientacyjne, popraw je, jeśli znasz swoje.')}</p>
-      <div class="onb-chips">${PRINTER_LIBRARY.filter((x) => x.popular).map((x) => `<button class="chip ${printerSel === x.id ? 'on' : ''}" data-pr="${x.id}">${esc(printerLabel(x))}</button>`).join('')}</div>
-      <div class="row onb-more"><select id="oPrSel"><option value="">${T('Inny model z biblioteki…')}</option>${printerOptions(printerById(printerSel) && !printerById(printerSel).popular ? printerSel : '')}<option value="custom" ${printerSel === 'custom' ? 'selected' : ''}>${T('Inna drukarka (wpiszę dane sam)')}</option></select></div>
-      <div class="fields onb-fields">
-        <label class="fld"><span>${T('Obszar roboczy (X × Y × Z)')}</span><span class="inp bed">${num('oBx', S.printers[0]?.x ?? '', '1', 64)}<i>×</i>${num('oBy', S.printers[0]?.y ?? '', '1', 64)}<i>×</i>${num('oBz', S.printers[0]?.z ?? '', '1', 64)}<em>mm</em></span></label>
-      </div>
+    printer: () => `<h2>${T('Jakie masz drukarki?')}</h2>
+      <p class="lead">${T('Wybierz swoją drukarkę (możesz dodać kilka) i zaznacz, czy masz AMS lub inny system wielomateriałowy. Na tej podstawie sprawdzam, czy model zmieści się na stole i czy kolory zmienią się automatycznie, oraz liczę prąd i zużycie drukarki.')}</p>
+      ${printersEditorHtml({ useBtn: false })}
+      <div class="label">${T('Koszty pracy drukarki (do wyceny)')}</div>
       <div class="fields onb-fields">
         <label class="fld"><span>${T('Średni pobór mocy w trakcie druku')}</span><span class="inp">${num('oW', p.printerW, '1')}<em>W</em></span></label>
         <label class="fld"><span>${T('Cena drukarki')}</span><span class="inp">${num('oPP', p.printerPrice, '1')}<em>${c()}</em></span></label>
         <label class="fld"><span>${T('Ile godzin wytrzyma, zanim się „zwróci” (żywotność)')}</span><span class="inp">${num('oPL', p.printerLife, '100')}<em>h</em></span></label>
         <label class="fld"><span>${T('Serwis i części: dysze, płyta PEI, paski')}</span><span class="inp">${num('oSv', p.servicePerH, '0.05')}<em>${c()}/h</em></span></label>
         <label class="fld"><span>${T('Cena prądu z rachunku (brutto, z dystrybucją)')}</span><span class="inp">${num('oKwh', p.kWhPrice, '0.01')}<em>${c()}/kWh</em></span></label>
+        ${S.printers.some((x) => x.mmu) ? `<label class="fld"><span>${T('Filament zużyty na jedną zmianę koloru (purge + wieża)')}</span><span class="inp">${num('oPg', p.purgePerChange, '0.1')}<em>g</em></span></label>
+        <label class="fld"><span>${T('Czas jednej zmiany koloru')}</span><span class="inp">${num('oCs', p.changeTimeSec, '1')}<em>s</em></span></label>` : ''}
       </div>
-      <p class="hint">${T('Pobór mocy sprawdzisz gniazdkiem z pomiarem energii. Drukarka z obudową i grzaną komorą pobiera więcej.')}</p>`,
+      <p class="hint">${T('Pobór mocy sprawdzisz gniazdkiem z pomiarem energii. Drukarka z obudową i grzaną komorą pobiera więcej.')}${S.printers.length > 1 ? ' ' + T('Koszty liczę według pierwszej drukarki na liście.') : ''}</p>`,
     filaments: () => `<h2>${T('Twoje filamenty')}</h2>
       <p class="lead">${T('Cena za kilogram decyduje o koszcie materiału, a kolor pomaga dopasować szpule do modeli wielokolorowych. Gwiazdka oznacza filament domyślny.')}</p>
       <table class="ftable onb-ft"><thead><tr><th></th><th>${T('Nazwa')}</th><th>${T('Kolor')}</th><th>${T('Typ')}</th><th class="r">${T('Cena/kg')}</th><th title="${T('Domyślny')}">★</th><th></th></tr></thead><tbody>
@@ -2130,7 +2197,7 @@ function openOnboarding() {
       <div class="onb-summary">
         <div><span>${T('Biblioteka')}</span><b>${lib ? esc(lib.root) : T('— (wybierzesz później)')}</b></div>
         <div><span>${T('Domyślny slicer')}</span><b>${d ? esc(d.name) : T('program domyślny systemu')}</b></div>
-        <div><span>${T('Drukarka')}</span><b>${S.printers[0] ? esc(S.printers[0].name) + ' · ' + bedTxt(S.printers[0]) : T('własne ustawienia')} · ${P().printerW} W</b></div>
+        <div><span>${S.printers.length > 1 ? T('Drukarki') : T('Drukarka')}</span><b>${S.printers.length ? S.printers.map((x) => esc(printerTitle(x))).join(', ') : T('własne ustawienia')} · ${P().printerW} W</b></div>
         <div><span>${T('Filamenty')}</span><b>${T('{0} w bibliotece, domyślny: {1}', { 0: (S.filaments.length), 1: (esc(filLabel(defaultFilament()))) })}</b></div>
         <div><span>${T('Twój czas')}</span><b>${T('{0} {1}/h · marża {2}%', { 0: (P().hourRate), 1: (c()), 2: (Math.round(P().margin * 100)) })}</b></div>
       </div>
@@ -2155,25 +2222,9 @@ function openOnboarding() {
       $('#oSlDet').onclick = async () => { await api.setSettings(S); const r = await safe(() => api.slicersDetect()); if (r) { S.slicers = r; draw(); } };
     },
     printer: () => {
-      const pick = (id) => {
-        printerSel = id;
-        const pr = printerById(id);
-        if (pr) {
-          p.printerW = pr.w; const pp = presetPrice(pr, c()); if (pp) p.printerPrice = pp;
-          S.printers = [printerFromPreset(pr, S.printers[0]?.id)];
-        } else if (id === 'custom' && !S.printers.length) S.printers = [{ id: 'pr' + Date.now().toString(36), preset: null, name: T('Moja drukarka'), x: 220, y: 220, z: 250 }];
-        draw();
-      };
-      el.querySelectorAll('[data-pr]').forEach((b) => b.onclick = () => pick(b.dataset.pr));
-      $('#oPrSel').onchange = (e) => e.target.value && pick(e.target.value);
-      ['x', 'y', 'z'].forEach((a) => { $('#oB' + a).oninput = (e) => {
-        const v = parseFloat(e.target.value);
-        if (!(Number.isFinite(v) && v > 0 && v < 5000)) return;
-        if (!S.printers.length) S.printers = [{ id: 'pr' + Date.now().toString(36), preset: null, name: T('Moja drukarka'), x: 220, y: 220, z: 250 }];
-        S.printers[0][a] = v;
-      }; });
-      const f = (id, k) => { $(id).oninput = (e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v) && v >= 0) p[k] = v; }; };
-      f('#oW', 'printerW'); f('#oPP', 'printerPrice'); f('#oPL', 'printerLife'); f('#oSv', 'servicePerH'); f('#oKwh', 'kWhPrice');
+      bindPrintersEditor(el, (kind) => { if (kind !== 'value') draw(); });
+      const f = (id, k) => { const e0 = $(id); if (e0) e0.oninput = (e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v) && v >= 0) p[k] = v; }; };
+      f('#oW', 'printerW'); f('#oPP', 'printerPrice'); f('#oPL', 'printerLife'); f('#oSv', 'servicePerH'); f('#oKwh', 'kWhPrice'); f('#oPg', 'purgePerChange'); f('#oCs', 'changeTimeSec');
     },
     filaments: () => {
       el.querySelectorAll('tbody tr').forEach((tr) => {
@@ -2211,7 +2262,7 @@ function openOnboarding() {
 
   async function finish() {
     S.onboardingDone = true;
-    S.onboardingPrinter = printerSel;
+    S.queue.printers = Math.max(1, S.printers.length);
     await api.setSettings(S);
     await api.inboxApply().catch(() => {});
     el.remove();

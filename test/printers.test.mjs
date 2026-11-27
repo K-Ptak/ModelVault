@@ -73,3 +73,48 @@ test('checkModelFit: plik wielopłytowy sprawdzany płyta po płycie', () => {
   assert.deepEqual(r.best.plates.filter((p) => !p.fits).map((p) => p.id), [2]);
   assert.equal(checkModelFit(stats, [{ name: 'P1S', x: 256, y: 256, z: 256 }]).fits, true, 'całość 900 mm szer. nie ma znaczenia – liczą się płyty');
 });
+
+// ---------- AMS i inne systemy wielomateriałowe ----------
+import { MMU_LIBRARY, mmuById, mmuOptionsFor, printerSlots, checkColors } from '../renderer/printers.js';
+
+test('AMS: każdy system z biblioteki ma sensowne dane, a drukarki wskazują istniejące systemy', () => {
+  for (const m of MMU_LIBRARY) { assert.ok(m.slots >= 1 && m.maxUnits >= 1); assert.ok(['swap', 'tool'].includes(m.kind)); }
+  for (const p of PRINTER_LIBRARY) for (const id of p.mmu || []) assert.ok(mmuById(id), `${p.id}: nieznany system ${id}`);
+});
+
+test('AMS: lista systemów pasujących do drukarki', () => {
+  const ids = (pr) => mmuOptionsFor(pr).map((m) => m.id);
+  assert.deepEqual(ids({ preset: 'p1s' }), ['ams', 'ams2pro', 'amsht', 'custom']);
+  assert.deepEqual(ids({ preset: 'a1mini' }), ['amslite', 'custom']);
+  assert.deepEqual(ids({ preset: 'mk4s' }), ['mmu3', 'custom']);
+  assert.deepEqual(ids({ preset: 'ender3v2' }), ['custom'], 'drukarka bez oficjalnego systemu – tylko „inny”');
+  assert.ok(ids({ preset: null }).length > 5, 'własna drukarka – wszystkie systemy');
+});
+
+test('AMS: liczba miejsc na filament', () => {
+  assert.equal(printerSlots({}), 1);
+  assert.equal(printerSlots({ mmu: { id: 'ams', units: 1 } }), 4);
+  assert.equal(printerSlots({ mmu: { id: 'ams', units: 4 } }), 16, 'P1S z czterema AMS');
+  assert.equal(printerSlots({ mmu: { id: 'ams', units: 9 } }), 16, 'nie więcej niż maksimum jednostek');
+  assert.equal(printerSlots({ mmu: { id: 'amslite', units: 3 } }), 4, 'AMS lite – tylko jedna jednostka');
+  assert.equal(printerSlots({ mmu: { id: 'mmu3' } }), 5);
+  assert.equal(printerSlots({ mmu: { id: 'xltools', units: 5 } }), 5, 'Prusa XL z pięcioma głowicami');
+  assert.equal(printerSlots({ mmu: { id: 'custom', slots: 8 } }), 8);
+  assert.equal(printerSlots({ mmu: { id: 'nieznany' } }), 1);
+});
+
+test('AMS: czy kolory modelu zmienią się automatycznie', () => {
+  const p1s = { name: 'P1S', mmu: { id: 'ams', units: 1 } };
+  const mini = { name: 'A1 mini' };
+  assert.equal(checkColors(1, [mini]), null, 'jeden kolor – nic do sprawdzania');
+  assert.equal(checkColors(3, []), null);
+  assert.deepEqual(checkColors(3, [mini]), { ok: false, maxSlots: 1, best: mini, manual: true });
+  const r = checkColors(4, [mini, p1s]);
+  assert.equal(r.ok, true);
+  assert.equal(r.best, p1s);
+  const six = checkColors(6, [p1s]);
+  assert.equal(six.ok, false);
+  assert.equal(six.manual, false);
+  assert.equal(six.maxSlots, 4);
+  assert.equal(checkColors(6, [{ name: 'P1S', mmu: { id: 'ams', units: 2 } }]).ok, true);
+});

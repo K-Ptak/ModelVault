@@ -3,18 +3,18 @@
 
 export const PRINTER_LIBRARY = [
   // Bambu Lab
-  { id: 'a1mini', brand: 'Bambu Lab', name: 'A1 mini', bed: [180, 180, 180], w: 70, pln: 1100, eur: 249, popular: true },
-  { id: 'a1', brand: 'Bambu Lab', name: 'A1', bed: [256, 256, 256], w: 95, pln: 1700, eur: 399, popular: true },
-  { id: 'p1p', brand: 'Bambu Lab', name: 'P1P', bed: [256, 256, 256], w: 100, pln: 2200, eur: 499 },
-  { id: 'p1s', brand: 'Bambu Lab', name: 'P1S', bed: [256, 256, 256], w: 110, pln: 2700, eur: 649, popular: true },
-  { id: 'x1c', brand: 'Bambu Lab', name: 'X1 Carbon', bed: [256, 256, 256], w: 120, pln: 4500, eur: 1099, popular: true },
-  { id: 'h2d', brand: 'Bambu Lab', name: 'H2D', bed: [350, 320, 325], w: 160, pln: 9000, eur: 1999 },
+  { id: 'a1mini', brand: 'Bambu Lab', name: 'A1 mini', bed: [180, 180, 180], w: 70, pln: 1100, eur: 249, popular: true, mmu: ['amslite'] },
+  { id: 'a1', brand: 'Bambu Lab', name: 'A1', bed: [256, 256, 256], w: 95, pln: 1700, eur: 399, popular: true, mmu: ['amslite'] },
+  { id: 'p1p', brand: 'Bambu Lab', name: 'P1P', bed: [256, 256, 256], w: 100, pln: 2200, eur: 499, mmu: ['ams', 'ams2pro', 'amsht'] },
+  { id: 'p1s', brand: 'Bambu Lab', name: 'P1S', bed: [256, 256, 256], w: 110, pln: 2700, eur: 649, popular: true, mmu: ['ams', 'ams2pro', 'amsht'] },
+  { id: 'x1c', brand: 'Bambu Lab', name: 'X1 Carbon', bed: [256, 256, 256], w: 120, pln: 4500, eur: 1099, popular: true, mmu: ['ams', 'ams2pro', 'amsht'] },
+  { id: 'h2d', brand: 'Bambu Lab', name: 'H2D', bed: [350, 320, 325], w: 160, pln: 9000, eur: 1999, mmu: ['ams2pro', 'amsht', 'ams'] },
   // Prusa
   { id: 'mini', brand: 'Prusa', name: 'MINI+', bed: [180, 180, 180], w: 60, pln: 2000, eur: 459 },
-  { id: 'mk3s', brand: 'Prusa', name: 'MK3S+', bed: [250, 210, 210], w: 80, pln: 3300, eur: 799 },
-  { id: 'mk4s', brand: 'Prusa', name: 'MK4S', bed: [250, 210, 220], w: 80, pln: 4300, eur: 999, popular: true },
-  { id: 'coreone', brand: 'Prusa', name: 'CORE One', bed: [250, 220, 270], w: 100, pln: 5000, eur: 1199, popular: true },
-  { id: 'xl', brand: 'Prusa', name: 'XL', bed: [360, 360, 360], w: 150, pln: 9500, eur: 2199 },
+  { id: 'mk3s', brand: 'Prusa', name: 'MK3S+', bed: [250, 210, 210], w: 80, pln: 3300, eur: 799, mmu: ['mmu3'] },
+  { id: 'mk4s', brand: 'Prusa', name: 'MK4S', bed: [250, 210, 220], w: 80, pln: 4300, eur: 999, popular: true, mmu: ['mmu3'] },
+  { id: 'coreone', brand: 'Prusa', name: 'CORE One', bed: [250, 220, 270], w: 100, pln: 5000, eur: 1199, popular: true, mmu: ['mmu3'] },
+  { id: 'xl', brand: 'Prusa', name: 'XL', bed: [360, 360, 360], w: 150, pln: 9500, eur: 2199, mmu: ['xltools'] },
   // Creality
   { id: 'ender3v2', brand: 'Creality', name: 'Ender-3 V2', bed: [220, 220, 250], w: 110, pln: 800, eur: 199 },
   { id: 'ender3s1', brand: 'Creality', name: 'Ender-3 S1', bed: [220, 220, 270], w: 110, pln: 1000, eur: 249 },
@@ -22,7 +22,7 @@ export const PRINTER_LIBRARY = [
   { id: 'ender3v3ke', brand: 'Creality', name: 'Ender-3 V3 KE', bed: [220, 220, 240], w: 120, pln: 1100, eur: 269 },
   { id: 'k1c', brand: 'Creality', name: 'K1 / K1C', bed: [220, 220, 250], w: 140, pln: 1900, eur: 449, popular: true },
   { id: 'k1max', brand: 'Creality', name: 'K1 Max', bed: [300, 300, 300], w: 180, pln: 2900, eur: 699 },
-  { id: 'k2plus', brand: 'Creality', name: 'K2 Plus', bed: [350, 350, 350], w: 200, pln: 5500, eur: 1299 },
+  { id: 'k2plus', brand: 'Creality', name: 'K2 Plus', bed: [350, 350, 350], w: 200, pln: 5500, eur: 1299, mmu: ['cfs'] },
   // Elegoo
   { id: 'neptune4', brand: 'Elegoo', name: 'Neptune 4 / 4 Pro', bed: [225, 225, 265], w: 120, pln: 1000, eur: 249, popular: true },
   { id: 'neptune4plus', brand: 'Elegoo', name: 'Neptune 4 Plus', bed: [320, 320, 385], w: 160, pln: 1500, eur: 349 },
@@ -30,11 +30,11 @@ export const PRINTER_LIBRARY = [
   { id: 'centauri', brand: 'Elegoo', name: 'Centauri Carbon', bed: [256, 256, 256], w: 120, pln: 1400, eur: 319 },
   // Anycubic
   { id: 'kobra2neo', brand: 'Anycubic', name: 'Kobra 2 Neo', bed: [220, 220, 250], w: 100, pln: 700, eur: 169 },
-  { id: 'kobra3', brand: 'Anycubic', name: 'Kobra 3', bed: [250, 250, 260], w: 120, pln: 1300, eur: 299 },
-  { id: 'kobras1', brand: 'Anycubic', name: 'Kobra S1', bed: [250, 250, 250], w: 120, pln: 1900, eur: 449 },
+  { id: 'kobra3', brand: 'Anycubic', name: 'Kobra 3', bed: [250, 250, 260], w: 120, pln: 1300, eur: 299, mmu: ['acepro'] },
+  { id: 'kobras1', brand: 'Anycubic', name: 'Kobra S1', bed: [250, 250, 250], w: 120, pln: 1900, eur: 449, mmu: ['acepro'] },
   // Qidi
   { id: 'q1pro', brand: 'Qidi', name: 'Q1 Pro', bed: [245, 245, 240], w: 140, pln: 2000, eur: 459 },
-  { id: 'plus4', brand: 'Qidi', name: 'Plus4', bed: [305, 305, 280], w: 180, pln: 3300, eur: 769 },
+  { id: 'plus4', brand: 'Qidi', name: 'Plus4', bed: [305, 305, 280], w: 180, pln: 3300, eur: 769, mmu: ['qidibox'] },
   { id: 'xplus3', brand: 'Qidi', name: 'X-Plus 3', bed: [280, 280, 270], w: 160, pln: 3000, eur: 699 },
   // inne
   { id: 'ad5m', brand: 'Flashforge', name: 'Adventurer 5M / 5M Pro', bed: [220, 220, 220], w: 100, pln: 1300, eur: 299 },
@@ -94,4 +94,51 @@ export function checkModelFit(stats, printers) {
   if (!res.length) return null;
   const ok = res.filter((r) => r.fits);
   return { fits: ok.length > 0, printers: res, best: ok[0] || res[0] };
+}
+
+// ---------- systemy wielomateriałowe (AMS i podobne) ----------
+// kind: 'swap' – jedna dysza, filament wymieniany (purge + wieża); 'tool' – zmieniacz głowic (prawie bez purge).
+// purge (g na zmianę) i changeSec (s na zmianę) to typowe wartości startowe – do poprawienia w ustawieniach wyceny.
+export const MMU_LIBRARY = [
+  { id: 'amslite', name: 'AMS lite', slots: 4, maxUnits: 1, kind: 'swap' },
+  { id: 'ams', name: 'AMS', slots: 4, maxUnits: 4, kind: 'swap' },
+  { id: 'ams2pro', name: 'AMS 2 Pro', slots: 4, maxUnits: 4, kind: 'swap' },
+  { id: 'amsht', name: 'AMS HT', slots: 1, maxUnits: 8, kind: 'swap' },
+  { id: 'mmu3', name: 'Prusa MMU3', slots: 5, maxUnits: 1, kind: 'swap' },
+  { id: 'xltools', name: 'Prusa XL multi-tool', slots: 1, maxUnits: 5, kind: 'tool', unitWord: 'tools' },
+  { id: 'cfs', name: 'Creality CFS', slots: 4, maxUnits: 4, kind: 'swap' },
+  { id: 'acepro', name: 'Anycubic ACE Pro', slots: 4, maxUnits: 2, kind: 'swap' },
+  { id: 'qidibox', name: 'QIDI Box', slots: 4, maxUnits: 4, kind: 'swap' },
+  { id: 'custom', name: null, slots: 4, maxUnits: 1, kind: 'swap', custom: true },
+];
+export const MMU_PROFILES = { swap: { purge: 0.6, changeSec: 45 }, tool: { purge: 0.1, changeSec: 15 } };
+export const mmuById = (id) => MMU_LIBRARY.find((m) => m.id === id) || null;
+
+/** Systemy pasujące do drukarki z biblioteki (dla własnej drukarki – wszystkie). „Inny system” zawsze na końcu. */
+export function mmuOptionsFor(printer) {
+  const pre = printer && printer.preset ? printerById(printer.preset) : null;
+  const ids = pre ? pre.mmu || [] : MMU_LIBRARY.filter((m) => !m.custom).map((m) => m.id);
+  return [...ids.map(mmuById).filter(Boolean), mmuById('custom')];
+}
+
+/** Liczba miejsc na filament w drukarce (1 = brak systemu wielomateriałowego). */
+export function printerSlots(pr) {
+  if (!pr || !pr.mmu) return 1;
+  const m = mmuById(pr.mmu.id);
+  if (!m) return 1;
+  if (m.custom) return Math.max(1, Math.round(Number(pr.mmu.slots) || 1));
+  const units = Math.max(1, Math.min(m.maxUnits, Math.round(Number(pr.mmu.units) || 1)));
+  return m.slots * units;
+}
+
+/**
+ * Czy model z `colors` kolorami da się wydrukować automatycznie na którejś drukarce.
+ * Zwraca null (jeden kolor / brak drukarek) albo { ok, maxSlots, best, manual } –
+ * manual = żadna drukarka nie ma systemu wielomateriałowego (kolory trzeba zmieniać ręcznie).
+ */
+export function checkColors(colors, printers) {
+  if (!(colors > 1) || !Array.isArray(printers) || !printers.length) return null;
+  let best = null, maxSlots = 0;
+  for (const pr of printers) { const n = printerSlots(pr); if (n > maxSlots) { maxSlots = n; best = pr; } }
+  return { ok: maxSlots >= colors, maxSlots, best, manual: maxSlots <= 1 };
 }

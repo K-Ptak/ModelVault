@@ -54,6 +54,7 @@ so everything keeps working in File Explorer, and the app picks up changes as th
 - **Multicolour models:** reads filament assignments and painting from 3MF files (Bambu Studio, OrcaSlicer, PrusaSlicer) and T0…Tn tools from G-code. Each colour is shown separately.
 - **Multiple plates in one file:** detects plates in Bambu Studio / MakerWorld exports, previews a single plate and shows each plate's dimensions.
 - **Build volume check:** pick your printers from a built-in library of 34 models (Bambu Lab, Prusa, Creality, Elegoo, Anycubic, Qidi, Voron…) or enter the bed size yourself. Models that don't fit any of your printers get a ⤢ badge, plates are checked one by one, a 90° rotation on the bed is taken into account, and the 3D preview draws the build volume outline.
+- **AMS and other multi-material systems:** mark whether a printer has an AMS, AMS lite, AMS 2 Pro, AMS HT, Prusa MMU3, Prusa XL tool heads, Creality CFS, Anycubic ACE Pro, QIDI Box or another system, including several units (e.g. P1S with 2× AMS = 8 slots). Models with more colours than your printers can change automatically get a warning, and typical purge and colour-change values are filled in for pricing.
 - **Damaged files are handled gracefully:** empty, truncated or corrupted STL / 3MF / OBJ / PLY / G-code files get a ! badge and a clear explanation (e.g. "contains 58 of 5,184 triangles — interrupted download?") instead of breaking the app.
 
 ### 💰 Pricing
@@ -71,7 +72,7 @@ so everything keeps working in File Explorer, and the app picks up changes as th
 - **Filament stock:** spool levels, the value of filament in stock, low-spool warnings, and automatic deduction of usage that you can undo.
 
 ### ⚙️ Convenience
-- **First-run wizard:** set up your folder, slicer, printer, prices and margin, with an example quote that updates live.
+- **First-run wizard:** set up your folder, slicer, printers (with AMS), prices and margin, with an example quote that updates live.
 - **Slicer integration:** detects installed slicers and opens a model in your chosen one with a single click. Only slicers you actually have are shown.
 - **Backups:** an automatic daily backup, plus export and import of settings, orders, clients and library metadata.
   If the settings or library metadata file gets corrupted, ModelVault restores it from the latest backup and keeps the damaged copy instead of overwriting it.
