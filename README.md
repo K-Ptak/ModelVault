@@ -221,8 +221,19 @@ UI text is written in Polish in the source and wrapped in `T('…')`. That Polis
 └── .github/workflows/    # CI (tests) and release builds
 ```
 
+### Branches
+- **`main`** – stable code; every release is tagged from this branch.
+- **`dev`** – ongoing development. New features and fixes land here first and are merged into `main` when they are ready for a release.
+
+```bash
+git checkout dev            # work on dev
+git checkout main && git merge --no-ff dev   # when dev is ready for a release
+```
+
+Tests run on every push to `main` and `dev` and on pull requests.
+
 ### Releasing a new version
-1. Set `version` in `package.json` and commit.
+1. Merge `dev` into `main`, set `version` in `package.json` and commit.
 2. `git tag v1.0.0 && git push origin v1.0.0`
 3. GitHub Actions runs the tests, builds the Windows installer and ZIP, and publishes the release.
    Installed copies of the app will offer the update.
