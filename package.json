@@ -99,7 +99,8 @@
       "category": "public.app-category.productivity",
       "identity": "-",
       "artifactName": "ModelVault-${version}-mac-${arch}.${ext}",
-      "notarize": false
+      "notarize": false,
+      "hardenedRuntime": false
     },
     "dmg": {
       "artifactName": "ModelVault-${version}-mac-${arch}.${ext}"
