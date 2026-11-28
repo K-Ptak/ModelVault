@@ -7,6 +7,7 @@ async function call(name, ...args) {
 }
 
 contextBridge.exposeInMainWorld('api', {
+  platform: process.platform,
   getLibrary: () => call('lib:get'),
   chooseLibrary: () => call('lib:choose'),
   readFile: (rel) => call('file:read', rel),

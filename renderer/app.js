@@ -1764,7 +1764,7 @@ function renderUpdateBanner() {
   const b = $('#updBanner');
   if (!updateState || updateState.state === 'none' || updateState.state === 'error') { b.hidden = true; return; }
   b.hidden = false;
-  if (updateState.state === 'available') b.innerHTML = `${T('Dostępna nowa wersja {0}', { 0: (esc(updateState.version)) })} <button class="toast-btn" id="updGo">${T('Pobierz')}</button><button class="icon-btn" id="updX">✕</button>`;
+  if (updateState.state === 'available') b.innerHTML = `${T('Dostępna nowa wersja {0}', { 0: (esc(updateState.version)) })} <button class="toast-btn" id="updGo">${updateState.manual ? T('Pobierz ze strony') : T('Pobierz')}</button><button class="icon-btn" id="updX">✕</button>`;
   if (updateState.state === 'progress') b.innerHTML = T('Pobieranie aktualizacji… {0}%', { 0: (updateState.percent) });
   if (updateState.state === 'downloaded') b.innerHTML = `${T('Aktualizacja {0} gotowa', { 0: (esc(updateState.version)) })} <button class="toast-btn" id="updInst">${T('Uruchom ponownie i zainstaluj')}</button>`;
   const g = $('#updGo'); if (g) g.onclick = () => api.updateDownload();
@@ -2370,11 +2370,11 @@ async function tabAbout(body) {
     <button class="btn" id="abOnb">${T('Uruchom kreator konfiguracji ponownie')}</button>
     <div class="label">${T('Aktualizacje')}</div>
     ${v.updater ? `<label class="check"><input type="checkbox" id="upAuto" ${S.updates.auto ? 'checked' : ''}> ${T('Sprawdzaj aktualizacje przy starcie')}</label>
-      <button class="btn" id="upNow">${T('Sprawdź teraz')}</button> <span class="vsub" id="upMsg"></span>`
-      : `<p class="hint">${T('{0} Nowe wersje znajdziesz na GitHubie w zakładce Releases.', { 0: (v.portable ? T('To wersja przenośna (ZIP) – aktualizacje automatyczne działają w wersji instalowanej.') : T('Aktualizacje automatyczne działają w zainstalowanej wersji na Windows.')) })}</p>`}`;
+      <button class="btn" id="upNow">${T('Sprawdź teraz')}</button> <span class="vsub" id="upMsg"></span>${v.mode === 'manual' ? `<p class="hint">${T('W tej wersji aplikacji aktualizację pobierasz ręcznie ze strony GitHub – ModelVault powie Ci, gdy pojawi się nowa wersja.')}</p>` : ''}`
+      : `<p class="hint">${T('{0} Nowe wersje znajdziesz na GitHubie w zakładce Releases.', { 0: (v.portable ? T('To wersja przenośna (ZIP) – aktualizacje automatyczne działają w wersji instalowanej.') : T('Aktualizacje automatyczne działają w zainstalowanej wersji (Windows, Linux AppImage).')) })}</p>`}`;
   body.querySelector('#abOnb').onclick = () => { $('#modalBack').hidden = true; $('#modal').innerHTML = ''; openOnboarding(); };
   const a = body.querySelector('#upAuto'); if (a) a.onchange = (e) => { S.updates.auto = e.target.checked; saveSettings(); };
-  const n = body.querySelector('#upNow'); if (n) n.onclick = async () => { body.querySelector('#upMsg').textContent = 'Sprawdzam…'; await safe(() => api.updateCheck()); setTimeout(() => { const m = body.querySelector('#upMsg'); if (m) m.textContent = updateState && updateState.state === 'available' ? T('Dostępna {0}', { 0: (updateState.version) }) : updateState && updateState.state === 'none' ? T('Masz najnowszą wersję') : ''; }, 2500); };
+  const n = body.querySelector('#upNow'); if (n) n.onclick = async () => { body.querySelector('#upMsg').textContent = T('Sprawdzam…'); await safe(() => api.updateCheck()); setTimeout(() => { const m = body.querySelector('#upMsg'); if (m) m.textContent = updateState && updateState.state === 'available' ? T('Dostępna {0}', { 0: (updateState.version) }) : updateState && updateState.state === 'none' ? T('Masz najnowszą wersję') : ''; }, 2500); };
 }
 
 // ---------- kreator pierwszego uruchomienia ----------

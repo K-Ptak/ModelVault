@@ -2,7 +2,7 @@
 // Biblioteka = zwykły folder na dysku. Podfoldery = kategorie.
 // Tagi / notatki / status trzymane w <biblioteka>/.modelvault.json (wędruje razem z folderem).
 
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, Tray, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, Tray, nativeImage, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -20,6 +20,7 @@ const IMAGES = new Set(['png', 'jpg', 'jpeg', 'webp']);
 const IGNORE_DIRS = new Set(['node_modules', '.git', '$RECYCLE.BIN', 'System Volume Information']);
 
 let win = null;
+const toWin = (ch, data) => { if (win && !win.isDestroyed()) win.webContents.send(ch, data); };
 let config = {};
 let root = null;
 let meta = { version: 1, files: {} };
@@ -329,7 +330,7 @@ function startWatcher() {
       clearTimeout(t);
       t = setTimeout(async () => {
         if (fname && String(fname).endsWith(META_FILE) && Date.now() >= selfWriteUntil) await loadMeta();
-        win && win.webContents.send('lib:changed');
+        toWin('lib:changed');
       }, 500);
     });
     watcher.on('error', () => {});
@@ -707,12 +708,12 @@ async function processInboxFile(abs) {
     try { entries = fflate.unzipSync(new Uint8Array(buf), { filter }); } catch (e) {
       console.warn('zip', name, e.message);
       ib.processed[key] = st.mtimeMs; saveSettings();
-      win && win.webContents.send('inbox:error', { file: name, reason: 'corrupt' });
+      toWin('inbox:error', { file: name, reason: 'corrupt' });
       return null;
     }
     if (filter.exceeded) {
       ib.processed[key] = st.mtimeMs; saveSettings();
-      win && win.webContents.send('inbox:error', { file: name, reason: 'too-big' });
+      toWin('inbox:error', { file: name, reason: 'too-big' });
       return null;
     }
     const models = Object.keys(entries).filter((n) => INBOX_EXT.has(extOf(n)) && !n.endsWith('/'));
@@ -750,7 +751,7 @@ async function drainInbox() {
       inboxPending.delete(abs);
       try {
         const added = await processInboxFile(abs);
-        if (added && added.length && win) win.webContents.send('inbox:added', { file: path.basename(abs), added });
+        if (added && added.length) toWin('inbox:added', { file: path.basename(abs), added });
       } catch (e) { console.warn('inbox', abs, e); }
     }
   } finally { inboxBusy = false; }
@@ -809,22 +810,45 @@ handle('pdf:save', async (html, defaultName) => {
 
 // ---------- aktualizacje ----------
 const isPortable = !!process.env.PORTABLE_EXECUTABLE_DIR || !!process.env.MV_PORTABLE || (app.isPackaged && !fs.existsSync(path.join(process.resourcesPath || '', 'app-update.yml')));
-function sendUpdate(state, extra = {}) { win && win.webContents.send('update:status', { state, ...extra }); }
+function sendUpdate(state, extra = {}) { toWin('update:status', { state, ...extra }); }
+// Tryby aktualizacji: 'auto' – electron-updater pobiera i instaluje (Windows NSIS, Linux AppImage);
+// 'manual' – sprawdzamy GitHub Releases i otwieramy stronę pobierania (macOS bez podpisu Apple, .deb, wersje przenośne).
+const RELEASES_API = 'https://api.github.com/repos/K-Ptak/ModelVault/releases/latest';
+let updateMode = null, manualUrl = null;
 function setupUpdater() {
-  if (!autoUpdater || !app.isPackaged || isPortable || process.platform !== 'win32') return false;
-  autoUpdater.autoDownload = false;
-  autoUpdater.on('update-available', (i) => sendUpdate('available', { version: i.version }));
-  autoUpdater.on('update-not-available', () => sendUpdate('none'));
-  autoUpdater.on('download-progress', (p) => sendUpdate('progress', { percent: Math.round(p.percent) }));
-  autoUpdater.on('update-downloaded', (i) => sendUpdate('downloaded', { version: i.version }));
-  autoUpdater.on('error', (e) => sendUpdate('error', { message: String(e && e.message || e) }));
+  if (!app.isPackaged) return false;
+  const canAuto = autoUpdater && !isPortable && (process.platform === 'win32' || (process.platform === 'linux' && !!process.env.APPIMAGE));
+  updateMode = canAuto ? 'auto' : 'manual';
+  if (updateMode === 'auto') {
+    autoUpdater.autoDownload = false;
+    autoUpdater.on('update-available', (i) => sendUpdate('available', { version: i.version }));
+    autoUpdater.on('update-not-available', () => sendUpdate('none'));
+    autoUpdater.on('download-progress', (p) => sendUpdate('progress', { percent: Math.round(p.percent) }));
+    autoUpdater.on('update-downloaded', (i) => sendUpdate('downloaded', { version: i.version }));
+    autoUpdater.on('error', (e) => sendUpdate('error', { message: String(e && e.message || e) }));
+  }
   return true;
 }
+const semverGt = (a, b) => { const p = (v) => String(v).replace(/^v/, '').split(/[.-]/).slice(0, 3).map((x) => parseInt(x, 10) || 0); const x = p(a), y = p(b); for (let i = 0; i < 3; i++) { if (x[i] !== y[i]) return x[i] > y[i]; } return false; };
+async function manualCheck(manualRequest) {
+  try {
+    const r = await net.fetch(RELEASES_API, { headers: { 'User-Agent': 'ModelVault', Accept: 'application/vnd.github+json' } });
+    if (r.status === 404) return sendUpdate('none');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    if (j && j.tag_name && semverGt(j.tag_name, app.getVersion())) { manualUrl = j.html_url; sendUpdate('available', { version: j.tag_name.replace(/^v/, ''), manual: true }); }
+    else sendUpdate('none');
+  } catch (e) { sendUpdate('error', { message: String(e.message || e), manual: manualRequest }); }
+}
+async function checkForUpdates(manualRequest = false) {
+  if (updateMode === 'auto') return autoUpdater.checkForUpdates();
+  if (updateMode === 'manual') return manualCheck(manualRequest);
+}
 let updaterReady = false;
-handle('update:check', async () => { if (!updaterReady) return { supported: false, version: app.getVersion() }; await autoUpdater.checkForUpdates(); return { supported: true, version: app.getVersion() }; });
-handle('update:download', async () => { if (updaterReady) await autoUpdater.downloadUpdate(); return true; });
-handle('update:install', async () => { if (updaterReady) autoUpdater.quitAndInstall(); return true; });
-handle('app:version', async () => ({ version: app.getVersion(), updater: updaterReady, portable: isPortable, platform: process.platform }));
+handle('update:check', async () => { if (!updaterReady) return { supported: false, version: app.getVersion() }; await checkForUpdates(true); return { supported: true, version: app.getVersion() }; });
+handle('update:download', async () => { if (updateMode === 'auto') await autoUpdater.downloadUpdate(); else if (manualUrl) await shell.openExternal(manualUrl); return true; });
+handle('update:install', async () => { if (updateMode === 'auto') autoUpdater.quitAndInstall(); return true; });
+handle('app:version', async () => ({ version: app.getVersion(), updater: updaterReady, mode: updateMode, portable: isPortable, platform: process.platform }));
 
 // ---------- praca w tle, zasobnik, autostart ----------
 let tray = null, quitting = false;
@@ -844,9 +868,21 @@ function applyBackgroundMode() {
       tray.on('click', showWindow);
     } catch (e) { console.warn('tray', e.message); tray = null; }
   } else if (!n.background && tray) { tray.destroy(); tray = null; }
-  if (app.isPackaged && process.platform !== 'linux') {
-    try { app.setLoginItemSettings({ openAtLogin: !!n.autostart, args: ['--hidden'] }); } catch (e) { console.warn('autostart', e.message); }
+  if (app.isPackaged) {
+    try {
+      if (process.platform === 'linux') linuxAutostart(!!n.autostart);
+      else app.setLoginItemSettings({ openAtLogin: !!n.autostart, args: ['--hidden'] });
+    } catch (e) { console.warn('autostart', e.message); }
   }
+}
+/** Linux: autostart przez plik .desktop w ~/.config/autostart (standard XDG). */
+function linuxAutostart(on) {
+  const dir = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'autostart');
+  const file = path.join(dir, 'modelvault.desktop');
+  if (!on) { fs.rmSync(file, { force: true }); return; }
+  const exe = process.env.APPIMAGE || process.execPath;
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(file, `[Desktop Entry]\nType=Application\nName=ModelVault\nExec="${exe}" --hidden\nX-GNOME-Autostart-enabled=true\n`);
 }
 handle('app:focus', async () => { showWindow(); return true; });
 app.on('before-quit', () => { quitting = true; });
@@ -862,7 +898,8 @@ function createWindow() {
     autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false },
   });
-  Menu.setApplicationMenu(null);
+  // macOS potrzebuje menu aplikacji, inaczej nie działają Cmd+C / Cmd+V / Cmd+Q
+  Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }]) : null);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.on('close', (e) => {
     // praca w tle: zamknięcie okna chowa je do zasobnika, żeby powiadomienia o terminach dalej działały
@@ -915,6 +952,10 @@ app.whenReady().then(async () => {
   setInterval(maybeAutoBackup, 3600 * 1000);
   startInbox();
   updaterReady = setupUpdater();
-  if (updaterReady && settings.updates.auto) setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 8000);
+  if (updaterReady && settings.updates.auto) setTimeout(() => Promise.resolve(checkForUpdates()).catch(() => {}), 8000);
 });
-app.on('window-all-closed', async () => { clearTimeout(saveTimer); try { await saveMetaNow(); } catch {} app.quit(); });
+app.on('window-all-closed', async () => {
+  clearTimeout(saveTimer); try { await saveMetaNow(); } catch {}
+  if (process.platform !== 'darwin' || quitting) app.quit(); // na Macu aplikacja zostaje w Docku
+});
+app.on('activate', () => { if (!win || win.isDestroyed()) createWindow(); else showWindow(); });

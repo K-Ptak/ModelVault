@@ -1,0 +1,38 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a 3MF file exported from …
+        2. Click …
+  - type: input
+    id: version
+    attributes:
+      label: ModelVault version
+      description: Settings → About
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows, Linux (AppImage), Linux (.deb), macOS (Apple Silicon), macOS (Intel)]
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Files or screenshots
+      description: If the problem is caused by a specific model file, attach it (or a link) if you can.

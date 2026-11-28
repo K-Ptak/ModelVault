@@ -1,38 +1,98 @@
 name: Build & Release
 
-# Wypuszczenie wersji: zmień "version" w package.json, a potem:
-#   git tag v1.3.0 && git push origin v1.3.0
+# Wydanie wersji (z gałęzi main):
+#   1. scal dev do main, podbij "version" w package.json
+#   2. git tag v1.1.0 && git push origin v1.1.0
+# Workflow buduje paczki na Windows, Linux i macOS do szkicu release'u,
+# a publikuje go dopiero, gdy wszystkie trzy buildy się udadzą.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag do (prze)budowania, np. v1.1.0'
+        required: true
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: Wersja w package.json zgadza się z tagiem
+        run: |
+          V=$(node -p "require('./package.json').version")
+          if [ "v$V" != "$TAG" ]; then echo "::error::package.json ma wersję $V, a tag to $TAG"; exit 1; fi
 
-  windows:
+  draft:
     needs: test
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Szkic release'u (wspólny dla wszystkich buildów)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" --draft --title "ModelVault ${TAG#v}" --notes "Build w toku…" --verify-tag
+          fi
+
+  build:
+    needs: draft
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: --win
+          - os: ubuntu-latest
+            target: --linux
+          - os: macos-latest
+            target: --mac
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Build installer + zip and publish GitHub Release
-        run: npx electron-builder --win --publish always
+      - name: Build i wysyłka do szkicu release'u
+        run: npx electron-builder ${{ matrix.target }} --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS bez konta Apple Developer: podpis ad-hoc (identity "-"), bez notaryzacji
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Opis zmian i publikacja release'u
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          NOTES=$(gh api "repos/$REPO/releases/generate-notes" -f tag_name="$TAG" --jq .body)
+          MAC_NOTE=$'\n\n---\n**macOS:** aplikacja nie jest podpisana certyfikatem Apple. Przy pierwszym uruchomieniu kliknij ją prawym przyciskiem → **Otwórz**, albo w Terminalu: `xattr -cr /Applications/ModelVault.app`.'
+          gh release edit "$TAG" --repo "$REPO" --title "ModelVault ${TAG#v}" --notes "$NOTES$MAC_NOTE" --draft=false --latest
