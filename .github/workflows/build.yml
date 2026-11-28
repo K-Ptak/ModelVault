@@ -1,0 +1,52 @@
+name: Test builds
+
+# Próbne paczki na wszystkie systemy – bez publikowania release'u.
+# Uruchamia się przy pull requestach do main (przed wydaniem) i ręcznie (Actions → Test builds → Run workflow).
+# Gotowe paczki są do pobrania jako artefakty przebiegu przez 7 dni.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: --win
+            name: windows
+          - os: ubuntu-latest
+            target: --linux
+            name: linux
+          - os: macos-latest
+            target: --mac
+            name: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build (bez publikacji)
+        run: npx electron-builder ${{ matrix.target }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # podpis ad-hoc na macOS także w próbnych buildach z pull requestów (jak w release)
+          CSC_FOR_PULL_REQUEST: 'true'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ModelVault-${{ matrix.name }}
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.dmg
+            !dist/*-mac-*.zip
+          if-no-files-found: error
+          retention-days: 7

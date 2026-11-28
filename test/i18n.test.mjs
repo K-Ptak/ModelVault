@@ -27,3 +27,18 @@ for (const [name, dict] of [['EN', EN], ['DE', DE]]) {
     assert.deepEqual(bad, []);
   });
 }
+
+test('nazwy zależne od systemu: Eksplorator → Finder / menedżer plików, Recycle Bin → Trash', async () => {
+  const { platformize } = await import('../renderer/i18n.js');
+  assert.equal(platformize('Pokaż w Eksploratorze', 'darwin', 'pl'), 'Pokaż w Finderze');
+  assert.equal(platformize('Pokaż w Eksploratorze', 'linux', 'pl'), 'Pokaż w menedżerze plików');
+  assert.equal(platformize('Pokaż w Eksploratorze', 'win32', 'pl'), 'Pokaż w Eksploratorze');
+  assert.equal(platformize('Show in Explorer', 'darwin', 'en'), 'Show in Finder');
+  assert.equal(platformize('Move to the Recycle Bin', 'linux', 'en'), 'Move to the Trash');
+  assert.equal(platformize('Im Explorer anzeigen', 'linux', 'de'), 'Im Dateimanager anzeigen');
+  assert.equal(platformize('Ustawienia (Ctrl+,)', 'darwin', 'pl'), 'Ustawienia (⌘,)');
+  for (const lang of ['pl', 'en', 'de']) for (const pl of ['darwin', 'linux']) {
+    const dict = lang === 'en' ? EN : lang === 'de' ? DE : null;
+    for (const k of keys) { const v = dict ? dict[k] : k; if (v) assert.equal(typeof platformize(v, pl, lang), 'string'); }
+  }
+});

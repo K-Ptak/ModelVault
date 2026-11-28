@@ -152,3 +152,16 @@ test('prawdziwe pliki: pojedyncze modele mają 1 płytę', { skip: !REAL }, () =
     if (fs.existsSync(p)) assert.equal(detectPlates([{ positions: readStl(p), up: 'z' }]).count, 1, f);
   }
 });
+
+test('partia: 30 sztuk na jednej płycie wychodzi taniej niż 30 osobnych wydruków', () => {
+  const one = { grams: 5, minutes: 20, filament: FIL.bialy };
+  const batch = priceItems([{ grams: one.grams * 30, minutes: one.minutes * 30, filament: one.filament, qty: 1 }], SHEET);
+  const separate = priceItems([{ ...one, qty: 30 }], SHEET);
+  close(batch.grams, separate.grams);
+  close(batch.minutes, separate.minutes);
+  close(batch.filament, separate.filament);
+  assert.equal(batch.prints, 1);
+  assert.equal(separate.prints, 30);
+  assert.ok(batch.cost < separate.cost, `${batch.cost} < ${separate.cost}`);
+  close(separate.labor - batch.labor, 29 * SHEET.minPerPrint / 60 * SHEET.hourRate, 1e-9);
+});

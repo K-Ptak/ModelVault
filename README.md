@@ -10,7 +10,7 @@
 ![Version](https://img.shields.io/badge/version-1.0.0-f2a03d)
 ![Status](https://img.shields.io/badge/status-in%20development-6aa7ff)
 [![License: MIT](https://img.shields.io/badge/license-MIT-5ec48a)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-Windows-0078d4)
+![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20Linux%20%C2%B7%20macOS-0078d4)
 ![Languages](https://img.shields.io/badge/languages-EN%20%C2%B7%20PL%20%C2%B7%20DE-9b7bea)
 ![Electron](https://img.shields.io/badge/Electron-45-47848f?logo=electron&logoColor=white)
 ![three.js](https://img.shields.io/badge/three.js-r187-000000?logo=three.js&logoColor=white)
@@ -62,6 +62,7 @@ so everything keeps working in File Explorer, and the app picks up changes as th
 - **Slicer data:** grams and time from G-code (PrusaSlicer, OrcaSlicer, Bambu Studio, Cura) and from sliced 3MF files, per filament and including purge. Without slicer data, an estimate is made from the model's volume.
 - **Several spools per model:** one spool per colour, matched automatically to the colours in the file. Colour changes, purge and change time are estimated.
 - **Order quotes** combining many models and manual items, with CSV export and a copyable summary.
+- **Batches – many pieces on one plate:** set e.g. 30 pieces per plate and ModelVault sums filament, time and cost (handling and warm-up are counted once per plate, so a batch is cheaper than separate prints) and works out how many pieces fit on your printer's bed with a configurable spacing. If you ask for more than fits (e.g. 40 when only 32 fit), you get a red warning with the number of plates needed and a one-click split into equal prints. The 3D preview shows the layout on the bed, with the overflow on a red second plate.
 
 ### 📦 Orders, clients and stock
 - **Order history:** numbering, statuses (quoted → printing → delivered), the price agreed with the client, and notes.
@@ -135,14 +136,22 @@ Each plate in a multi-plate file counts as a separate print. Every parameter can
 
 ## Installation
 
-> The first release is being prepared. Once it is published, the installer and the portable version will appear
-> under [Releases](https://github.com/K-Ptak/ModelVault/releases).
+> The first release is being prepared. Once it is published, packages will appear under
+> [Releases](https://github.com/K-Ptak/ModelVault/releases). Until then you can run the app from source (see [Development](#development)).
 
-Planned release files:
-- **`ModelVault-Setup-x.y.z.exe`**: an installer with a Start menu shortcut and automatic updates.
-- **`ModelVault-x.y.z-win-x64.zip`**: a portable version that needs no installation.
+| System | File | Updates |
+|---|---|---|
+| **Windows** | `ModelVault-Setup-x.y.z.exe` – installer | automatic |
+| | `ModelVault-x.y.z-win-x64.zip` – portable, no installation | notification + download page |
+| **Linux** | `ModelVault-x.y.z-linux-x86_64.AppImage` – runs on any distribution (`chmod +x`, then start it) | automatic |
+| | `ModelVault-x.y.z-linux-amd64.deb` – Ubuntu, Debian, Mint (`sudo apt install ./ModelVault-….deb`) | notification + download page |
+| **macOS** | `ModelVault-x.y.z-mac-arm64.dmg` – Apple Silicon (M1–M4) | notification + download page |
+| | `ModelVault-x.y.z-mac-x64.dmg` – Intel | notification + download page |
 
-Until then you can run the app from source (see [Development](#development)).
+**Unsigned builds.** ModelVault is a free hobby project and is not signed with paid certificates:
+- *Windows* may show a SmartScreen warning – click **More info → Run anyway**.
+- *macOS* blocks apps from unidentified developers – right-click the app → **Open**, or run
+  `xattr -cr /Applications/ModelVault.app` in Terminal once.
 
 ## How it works
 
@@ -176,7 +185,7 @@ Until then you can run the app from source (see [Development](#development)).
 
 ## Development
 
-**Requirements:** Node.js 22+, plus Windows for building the installer.
+**Requirements:** Node.js 22+. Packages for a system are built on that system (CI builds all three).
 
 ```bash
 git clone https://github.com/K-Ptak/ModelVault.git
@@ -184,7 +193,7 @@ cd ModelVault
 npm install      # dependencies + copies the required three.js modules to renderer/vendor
 npm start        # run the app
 npm test         # tests: pricing, multicolour files, plates, damaged files, printers, calendar, translations
-npm run dist     # build the installer and ZIP locally (dist/ folder)
+npm run dist     # build packages for the current system (dist/ folder); also dist:win / dist:linux / dist:mac
 ```
 
 To run the tests against your own files: `MV_REAL_DIR=path/to/folder npm test`.
@@ -218,25 +227,35 @@ UI text is written in Polish in the source and wrapped in `T('…')`. That Polis
 │   └── styles.css
 ├── test/                 # tests (node:test) and test files
 ├── scripts/vendor.js     # copies the required three.js modules
-└── .github/workflows/    # CI (tests) and release builds
+└── .github/              # CI and release workflows, issue/PR templates, Dependabot
 ```
 
-### Branches
-- **`main`** – stable code; every release is tagged from this branch.
-- **`dev`** – ongoing development. New features and fixes land here first and are merged into `main` when they are ready for a release.
+### Branch strategy
 
-```bash
-git checkout dev            # work on dev
-git checkout main && git merge --no-ff dev   # when dev is ready for a release
-```
+| Branch | Purpose |
+|---|---|
+| `main` | released code only – every release is a tag `vX.Y.Z` on `main` |
+| `dev` | integration branch – the next release is assembled here |
+| `feature/…`, `fix/…` | short-lived branches off `dev`, merged back with a pull request |
+| `hotfix/…` | urgent fixes for a released version, off `main`, merged into `main` and `dev` |
 
-Tests run on every push to `main` and `dev` and on pull requests.
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:` …) and versions follow
+[semantic versioning](https://semver.org/). Tests run on every push to `main` and `dev` and on every pull request;
+both branches are protected. Details, translation rules and the pull request checklist are in **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+
+### CI/CD
+
+| Workflow | Runs on | What it does |
+|---|---|---|
+| `ci.yml` | push to `main` / `dev`, pull requests | installs dependencies and runs all tests |
+| `release.yml` | tag `v*` | tests → draft release → builds on Windows, Linux and macOS in parallel → publishes the release with generated notes once all builds succeed |
+| `build.yml` | pull requests into `main`, manual run | test builds for all three systems without publishing; packages are downloadable as run artifacts |
+| Dependabot | weekly | pull requests into `dev` with dependency updates |
 
 ### Releasing a new version
-1. Merge `dev` into `main`, set `version` in `package.json` and commit.
+1. Merge `dev` into `main`, move the `Unreleased` entries in [CHANGELOG.md](CHANGELOG.md) under the new version and set `version` in `package.json`.
 2. `git tag v1.0.0 && git push origin v1.0.0`
-3. GitHub Actions runs the tests, builds the Windows installer and ZIP, and publishes the release.
-   Installed copies of the app will offer the update.
+3. GitHub Actions does the rest (the tag must match the version in `package.json`). Installed copies of the app will offer the update.
 
 ### Built with
 [Electron](https://www.electronjs.org/) · [three.js](https://threejs.org/) · [fflate](https://github.com/101arrowz/fflate) ·

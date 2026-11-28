@@ -455,6 +455,50 @@ export class Viewer {
     }
     if (this.grid) { this.scene.remove(this.grid); this.grid.geometry.dispose(); this.grid = null; }
     this.setBuildVolume(null);
+    this.clearBatch();
+  }
+  /** Podgląd partii: kopie modelu rozmieszczone na stole wg layout ({x, y, rot} w mm od rogu); nadmiar na kolejnych (czerwonych) płytach. */
+  showBatch(layout, bed, copies) {
+    this.clearBatch();
+    if (!this.holder || !layout || !layout.length || copies <= 1) return;
+    const g = new THREE.Group();
+    const cap = layout.length, n = Math.min(copies, 600), plates = Math.ceil(n / cap), pitch = bed.x + 30;
+    this._batchMats = [];
+    const red = new THREE.MeshStandardMaterial({ color: 0xe5484d, roughness: 0.6, metalness: 0.05, side: THREE.DoubleSide });
+    this._batchMats.push(red);
+    for (let i = 0; i < n; i++) {
+      const p = layout[i % cap], k = Math.floor(i / cap);
+      const c = this.holder.clone();
+      c.visible = true;
+      c.rotation.y = p.rot ? Math.PI / 2 : 0;
+      c.position.set(p.x - bed.x / 2 + k * pitch, 0, p.y - bed.y / 2);
+      if (k > 0) c.traverse((o) => { if (o.isMesh) o.material = red; });
+      g.add(c);
+    }
+    for (let k = 0; k < plates; k++) {
+      const ok = k === 0;
+      const box = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(bed.x, bed.z, bed.y)), new THREE.LineBasicMaterial({ color: ok ? 0x6aa7ff : 0xe5484d, transparent: true, opacity: ok ? 0.5 : 0.9 }));
+      box.position.set(k * pitch, bed.z / 2, 0);
+      box.userData.batchFrame = true;
+      const plate = new THREE.Mesh(new THREE.PlaneGeometry(bed.x, bed.y), new THREE.MeshBasicMaterial({ color: ok ? 0x6aa7ff : 0xe5484d, transparent: true, opacity: 0.06, side: THREE.DoubleSide }));
+      plate.rotation.x = -Math.PI / 2; plate.position.set(k * pitch, 0.02, 0);
+      plate.userData.batchFrame = true;
+      g.add(box, plate);
+    }
+    this.holder.visible = false;
+    this.batch = g;
+    this.scene.add(g);
+    if (this.grid) this.grid.visible = false;
+    fitCamera(this.camera, g, this.controls);
+  }
+  clearBatch() {
+    if (!this.batch) return;
+    this.scene.remove(this.batch);
+    this.batch.traverse((o) => { if (o.userData.batchFrame) { o.geometry.dispose(); o.material.dispose(); } });
+    (this._batchMats || []).forEach((m) => m.dispose());
+    this.batch = null;
+    if (this.holder) { this.holder.visible = true; fitCamera(this.camera, this.holder, this.controls); }
+    if (this.grid) this.grid.visible = true;
   }
   /** Obrys obszaru roboczego {x, y, z} (mm) wyśrodkowany pod widocznym modelem; ok=false → czerwony. */
   setBuildVolume(bed, ok = true, rotated = false) {
@@ -491,7 +535,7 @@ export class Viewer {
       if ((o.isMesh && !o.material.vertexColors) || ((o.isLine || o.isLineSegments) && !o.userData.travel)) o.material.color.copy(c);
     });
   }
-  resetView() { if (this.holder) fitCamera(this.camera, this.holder, this.controls); }
+  resetView() { const t = this.batch || this.holder; if (t) fitCamera(this.camera, t, this.controls); }
   showPlate(k) {
     if (!this.holder) return;
     this.holder.traverse((o) => { if (o.isMesh) { const hide = k != null && (o.userData.plate || 0) !== k; o.visible = !hide; o.userData.hiddenPlate = hide; } });

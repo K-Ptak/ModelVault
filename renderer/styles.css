@@ -691,3 +691,18 @@ body.wide-view .detail { display: none; }
 .plan-form .field, .ev-info .field { box-sizing: border-box; }
 .plan-form .row2 > label { min-width: 0; }
 .cev.plan i { color: var(--blue); } .cev.deadline i { color: #e6c84a; } .cev.deadline.overdue i { color: var(--red); } .cev.finish i { color: #8e6cd8; }
+/* wiele sztuk na płycie */
+.o-copies { white-space: nowrap; }
+.o-copies small, .o-qty small { display: block; font-size: 10.5px; color: var(--dim); font-family: var(--mono); text-align: right; margin-top: 2px; }
+.o-copies small.warn { color: var(--red); }
+.cell.over { border-color: var(--red) !important; color: #ffb4b2; background: rgba(239,100,97,.1); }
+.prow.batch { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.prow.batch > span { color: var(--muted); font-size: 12px; }
+.prow.batch input { width: 70px; }
+.prow.batch small { font-size: 11.5px; }
+.prow.batch small.ok { color: var(--green); } .prow.batch small.bad { color: var(--red); }
+.stockwarn .toast-btn { margin-left: 8px; }
+.o-copies input { width: 52px; }
+.o-num input.cell { width: 58px; }
+.o-name .nm, .o-name small { max-width: 170px; }
+.otable th, .otable td { padding-left: 6px; padding-right: 6px; }
