@@ -118,3 +118,70 @@ test('AMS: czy kolory modelu zmienią się automatycznie', () => {
   assert.equal(six.maxSlots, 4);
   assert.equal(checkColors(6, [{ name: 'P1S', mmu: { id: 'ams', units: 2 } }]).ok, true);
 });
+
+// ---------- wiele sztuk na płycie ----------
+import { plateCapacity, checkBatch, splitBatch } from '../renderer/printers.js';
+
+test('ile sztuk zmieści się na płycie: siatka, odstęp, obrót, wysokość', () => {
+  const p1s = { x: 256, y: 256, z: 256 };
+  assert.equal(plateCapacity({ x: 40, y: 40, z: 10 }, p1s, 5).count, 25, '5 × 5 przy odstępie 5 mm (5·40 + 4·5 = 220)');
+  assert.equal(plateCapacity({ x: 40, y: 40, z: 10 }, p1s, 0).count, 36, 'bez odstępu 6 × 6');
+  assert.equal(plateCapacity({ x: 256, y: 256, z: 10 }, p1s, 5).count, 1);
+  assert.equal(plateCapacity({ x: 300, y: 10, z: 10 }, p1s, 5).count, 0, 'za długi');
+  const tall = plateCapacity({ x: 10, y: 10, z: 300 }, p1s, 5);
+  assert.equal(tall.count, 0); assert.equal(tall.tooTall, true);
+  const mk4 = { x: 250, y: 210, z: 220 };
+  const r = plateCapacity({ x: 100, y: 120, z: 5 }, mk4, 5); // 2 × 1 normalnie, po obrocie 2 × 2 (120,100 → 2 kolumny, 2 rzędy)
+  assert.equal(r.count, 4);
+  assert.equal(r.rotated, true);
+  assert.equal(plateCapacity({ x: 70, y: 50, z: 5 }, p1s, 5).count, 12, '3 × 4');
+  // pas z resztą: 100 × 60 na 256 × 256 → 2 × 4 = 8, w pasie po prawej (51 mm) obrócone 60 × 100? nie; z tyłu nic → 8;
+  // 120 × 50 na 256 × 210: 2 × 3 = 6 + w pasie po prawej (11 mm) nic; obrócone 50 × 120: 4 × 1 = 4 + pas z tyłu 85 mm: 2 × 1 obrócone → 6
+  assert.equal(plateCapacity({ x: 100, y: 60, z: 5 }, p1s, 5).count, 8);
+  // 90 × 40 na 256 × 256: 2 × 5 = 10 + w pasie po prawej (66 mm) obrócone 40 × 90: 1 × 2 = 2 → 12
+  assert.equal(plateCapacity({ x: 90, y: 40, z: 5 }, p1s, 5).count, 12);
+  assert.equal(plateCapacity(null, p1s), null);
+  assert.equal(plateCapacity({ x: 0, y: 1, z: 1 }, p1s), null);
+});
+
+test('partia: 40 sztuk, a mieści się 25 → dwie płyty', () => {
+  const printers = [{ name: 'A1 mini', x: 180, y: 180, z: 180 }, { name: 'P1S', x: 256, y: 256, z: 256 }];
+  const r = checkBatch({ x: 40, y: 40, z: 10 }, 40, printers, 5);
+  assert.equal(r.printer.name, 'P1S', 'drukarka z największą pojemnością');
+  assert.equal(r.capacity, 25);
+  assert.equal(r.fits, false);
+  assert.equal(r.platesNeeded, 2);
+  assert.equal(checkBatch({ x: 40, y: 40, z: 10 }, 20, printers, 5).fits, true);
+  assert.equal(checkBatch({ x: 40, y: 40, z: 10 }, 5, [], 5), null);
+  // plik wielopłytowy – liczy się najciaśniejsza płyta
+  const multi = { x: 500, y: 300, z: 50, plates: [{ x: 40, y: 40, z: 10 }, { x: 120, y: 120, z: 10 }] };
+  assert.equal(checkBatch(multi, 1, [printers[1]], 5).capacity, 4);
+});
+
+test('podział partii na równe wydruki', () => {
+  assert.deepEqual(splitBatch(40, 25), { runs: 2, perRun: 20 });
+  assert.deepEqual(splitBatch(40, 32), { runs: 2, perRun: 20 });
+  assert.deepEqual(splitBatch(41, 32), { runs: 2, perRun: 21 });
+  assert.deepEqual(splitBatch(10, 32), { runs: 1, perRun: 10 });
+  assert.equal(splitBatch(10, 0), null);
+});
+
+test('rozmieszczenie sztuk zgadza się z pojemnością i mieści się na stole', async () => {
+  const { plateLayout } = await import('../renderer/printers.js');
+  const bed = { x: 256, y: 256, z: 256 };
+  for (const [d, gap] of [[{ x: 40, y: 40, z: 5 }, 5], [{ x: 90, y: 40, z: 5 }, 5], [{ x: 100, y: 120, z: 5 }, 5], [{ x: 13, y: 7, z: 2 }, 2]]) {
+    const L = plateLayout(d, bed, gap);
+    assert.equal(L.length, plateCapacity(d, bed, gap).count, JSON.stringify(d));
+    for (const p of L) {
+      const w = p.rot ? d.y : d.x, h = p.rot ? d.x : d.y;
+      assert.ok(p.x - w / 2 >= -1e-6 && p.x + w / 2 <= bed.x + 1e-6 && p.y - h / 2 >= -1e-6 && p.y + h / 2 <= bed.y + 1e-6, 'na stole');
+    }
+    for (let i = 0; i < L.length; i++) for (let j = i + 1; j < L.length; j++) {
+      const A = L[i], B = L[j];
+      const aw = A.rot ? d.y : d.x, ah = A.rot ? d.x : d.y, bw = B.rot ? d.y : d.x, bh = B.rot ? d.x : d.y;
+      const overlap = Math.abs(A.x - B.x) < (aw + bw) / 2 + gap - 1e-6 && Math.abs(A.y - B.y) < (ah + bh) / 2 + gap - 1e-6;
+      assert.ok(!overlap, `nachodzą na siebie: ${JSON.stringify([A, B])}`);
+    }
+  }
+  assert.deepEqual(plateLayout({ x: 300, y: 10, z: 1 }, bed, 5), []);
+});

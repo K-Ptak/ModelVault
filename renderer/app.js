@@ -2,7 +2,7 @@ import { Viewer, parseModel, renderThumbnail, computeStats, extract3mfThumbnail,
 import { gcodeColorInfo, hexDist } from './mc.js';
 import { T, LANG, LANGS, LOCALE, setLang } from './i18n.js';
 import { dayKey, parseDay, addDays, daysBetween, monthGrid, collectEvents, byDay, attentionCount, dueNotifications, pruneSent, isDay } from './calendar.js';
-import { PRINTER_LIBRARY, printerById, printerLabel, presetPrice, printerFromPreset, checkModelFit, MMU_LIBRARY, MMU_PROFILES, mmuById, mmuOptionsFor, printerSlots, checkColors } from './printers.js';
+import { PRINTER_LIBRARY, printerById, printerLabel, presetPrice, printerFromPreset, checkModelFit, MMU_LIBRARY, MMU_PROFILES, mmuById, mmuOptionsFor, printerSlots, checkColors, checkBatch, splitBatch, plateLayout } from './printers.js';
 import { priceItems, slicerInfoFromGcode, slicerInfoFrom3mf, fmtMoney, fmtNum, fmtDuration, parseDuration } from './pricing.js';
 
 const api = window.api;
@@ -885,7 +885,7 @@ function addToOrder(rels) {
   for (const rel of rels) {
     const ex = order().items.find((i) => i.rel === rel);
     if (ex) ex.qty = (Number(ex.qty) || 0) + 1;
-    else order().items.push({ id: 'i' + (orderSeq++).toString(36), rel, qty: 1 });
+    else order().items.push({ id: 'i' + (orderSeq++).toString(36), rel, qty: 1, copies: copiesOf((metaOf(rel).print || {}).copies) });
   }
   saveSettings();
   updateOrderCount();
@@ -908,11 +908,37 @@ function orderLines() {
       const f = lib && lib.files.find((x) => x.rel === it.rel);
       if (!f) return { it, missing: true, name: baseName(it.rel), grams: 0, minutes: 0, qty: 0, parts: [], filament: null };
       const d = printData(f);
-      return { it, f, name: f.name.replace(/\.[^.]+$/, ''), ...d, qty: Number(it.qty) || 0 };
+      return withCopies({ it, f, name: f.name.replace(/\.[^.]+$/, ''), ...d, qty: Number(it.qty) || 0 }, it.copies);
     }
     const fl = filamentById(it.filamentId) || defaultFilament();
-    return { it, name: it.name || T('Pozycja'), grams: it.grams ?? null, minutes: it.minutes ?? null, filament: fl, filamentSet: !!filamentById(it.filamentId), gramsSrc: 'ręcznie', minutesSrc: 'ręcznie', qty: Number(it.qty) || 0, parts: [{ slot: 0, filament: fl, grams: it.grams ?? null }], multi: false };
+    return withCopies({ it, name: it.name || T('Pozycja'), grams: it.grams ?? null, minutes: it.minutes ?? null, filament: fl, filamentSet: !!filamentById(it.filamentId), gramsSrc: 'ręcznie', minutesSrc: 'ręcznie', qty: Number(it.qty) || 0, parts: [{ slot: 0, filament: fl, grams: it.grams ?? null }], multi: false }, it.copies);
   });
+}
+/**
+ * Wiele sztuk na jednej płycie: gramy, czas i filament jednego wydruku = wartości jednej sztuki × liczba sztuk.
+ * Czas obsługi i energia na start liczą się raz na wydruk (płytę), więc partia wychodzi taniej niż osobne wydruki.
+ * Wartości jednej sztuki zostają w unitGrams / unitMinutes (do wyświetlania i edycji).
+ */
+const qtyTxt = (qty, copies) => ((copies || 1) > 1 ? ` – ${T('{0} × {1} szt.', { 0: qty, 1: copies })}` : qty > 1 ? ` ×${qty}` : '');
+const copiesOf = (v) => Math.max(1, Math.min(9999, Math.round(Number(v) || 1)));
+function withCopies(l, copies) {
+  const c = copiesOf(copies);
+  l.copies = c; l.unitGrams = l.grams; l.unitMinutes = l.minutes;
+  l.pieces = l.qty * c;
+  if (c > 1) {
+    if (l.grams != null) l.grams *= c;
+    if (l.minutes != null) l.minutes *= c;
+    l.parts = l.parts.map((p) => ({ ...p, unitGrams: p.grams, grams: p.grams != null ? p.grams * c : p.grams }));
+    if (l.purgeG) l.purgeG *= c;
+  }
+  return l;
+}
+/** Sprawdzenie partii dla pliku: ile sztuk zmieści się na płycie najlepszej z drukarek. */
+function batchOf(f, copies) { return f && f.viewable ? checkBatch(fileStats(f), copies, myPrinters(), P().arrangeGap ?? 5) : null; }
+function batchWarnText(name, b) {
+  return b.tooTall || !b.capacity
+    ? T('{0}: element nie mieści się na płycie {1}', { 0: name, 1: printerTitle(b.printer) })
+    : T('{0}: na płycie {1} zmieści się {2} szt., a ustawiono {3} – potrzebne płyty: {4}', { 0: name, 1: printerTitle(b.printer), 2: b.capacity, 3: b.copies, 4: b.platesNeeded });
 }
 const lineItem = (l) => ({ parts: l.parts.map((p) => ({ grams: p.grams || 0, filament: p.filament })), minutes: l.minutes || 0, qty: l.qty, plates: l.plates || 1 });
 const lineFilCost = (l) => l.parts.reduce((a, p) => a + (p.filament && p.grams ? p.grams * l.qty / 1000 * p.filament.pricePerKg : 0), 0);
@@ -938,9 +964,10 @@ function renderOrder() {
         : `<input class="cell" data-k="name" value="${esc(l.name)}" spellcheck="false">`}</td>
       <td class="o-fil">${l.multi ? `<span class="mc-chips" data-open title="${esc(l.parts.map((p) => `${p.name}: ${filLabel(p.filament)} (${fmtNum(p.grams || 0, 1)} g)`).join('\n'))}">${l.parts.map((p) => swatch(p.filament)).join('')}<span>${T('{0} kolory', { 0: (l.parts.length) })}</span></span>`
         : `${swatch(l.filament)}<select class="cell" data-k="filamentId" title="${esc(filLabel(l.filament))}">${filamentOptions(l.filamentSet ? l.filament.id : '', true, true)}</select>`}</td>
-      <td class="o-num">${l.multi ? `<span class="ro">${l.grams != null ? fmtNum(l.grams, 0) : '—'}</span>` : `<input class="cell num" data-k="grams" value="${l.gramsSrc === 'ręcznie' && l.grams != null ? fmtNum(l.grams, l.grams % 1 ? 1 : 0) : ''}" placeholder="${l.grams != null ? fmtNum(l.grams, 0) : '—'}">`}${srcBadge(l.gramsSrc)}</td>
-      <td class="o-num"><input class="cell num" data-k="minutes" value="${l.minutesSrc === 'ręcznie' && l.minutes != null ? fmtDurShort(l.minutes) : ''}" placeholder="${l.minutes != null ? fmtDurShort(l.minutes) : 'h:mm'}">${srcBadge(l.minutesSrc)}</td>
+      <td class="o-num">${l.multi ? `<span class="ro">${l.unitGrams != null ? fmtNum(l.unitGrams, 0) : '—'}</span>` : `<input class="cell num" data-k="grams" value="${l.gramsSrc === 'ręcznie' && l.unitGrams != null ? fmtNum(l.unitGrams, l.unitGrams % 1 ? 1 : 0) : ''}" placeholder="${l.unitGrams != null ? fmtNum(l.unitGrams, 0) : '—'}">`}${srcBadge(l.gramsSrc)}</td>
+      <td class="o-num"><input class="cell num" data-k="minutes" value="${l.minutesSrc === 'ręcznie' && l.unitMinutes != null ? fmtDurShort(l.unitMinutes) : ''}" placeholder="${l.unitMinutes != null ? fmtDurShort(l.unitMinutes) : 'h:mm'}">${srcBadge(l.minutesSrc)}</td>
       <td class="o-qty"><input class="cell num" type="number" min="0" step="1" data-k="qty" value="${l.qty}"></td>
+      <td class="o-qty o-copies">${(() => { const b = l.f ? batchOf(l.f, l.copies) : null; const over = b && !b.fits; return `<input class="cell num ${over ? 'over' : ''}" type="number" min="1" step="1" data-k="copies" value="${l.copies}" title="${b ? esc(T('Maksymalnie {0} szt. na płycie {1}', { 0: b.capacity, 1: printerTitle(b.printer) })) : T('Ile sztuk drukujesz naraz na jednej płycie')}">${l.copies > 1 || l.qty > 1 ? `<small class="${over ? 'warn' : ''}">${T('= {0} szt.', { 0: l.pieces })}</small>` : b ? `<small>max ${b.capacity}</small>` : ''}`; })()}</td>
       <td class="o-cost">${fmtMoney(lineCost, c)}</td>
       <td><button class="icon-btn" data-rm title="${T('Usuń z wyceny')}">✕</button></td>
     </tr>`;
@@ -960,9 +987,9 @@ function renderOrder() {
     </div>
     ${lines.length ? `
     <table class="otable">
-      <thead><tr><th></th><th>${T('Pozycja')}</th><th>${T('Filament')}</th><th class="r">${T('Gramy')}</th><th class="r">${T('Czas')}</th><th class="r">${T('Ile razy')}</th><th class="r">${T('Filament')}</th><th></th></tr></thead>
+      <thead><tr><th></th><th>${T('Pozycja')}</th><th>${T('Filament')}</th><th class="r">${T('Gramy')}</th><th class="r">${T('Czas')}</th><th class="r" title="${T('Ile razy drukujesz (osobne wydruki)')}">${T('Wydruki')}</th><th class="r" title="${T('Ile sztuk drukujesz naraz na jednej płycie')}">${T('Szt. na płycie')}</th><th class="r">${T('Filament')}</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
-      <tfoot><tr><td></td><td>${T('Razem')}</td><td></td><td class="r">${fmtNum(r.grams, 0)} g</td><td class="r">${fmtDuration(r.minutes)}</td><td class="r">${r.prints}</td><td class="r">${fmtMoney(r.filament, c)}</td><td></td></tr></tfoot>
+      <tfoot><tr><td></td><td>${T('Razem')}</td><td></td><td class="r">${fmtNum(r.grams, 0)} g</td><td class="r">${fmtDuration(r.minutes)}</td><td class="r">${r.prints}</td><td class="r">${fmtNum(lines.reduce((a, l) => a + (l.missing ? 0 : l.pieces), 0), 0)}</td><td class="r">${fmtMoney(r.filament, c)}</td><td></td></tr></tfoot>
     </table>
     ${stockWarnings(r.byFil.map((b) => ({ filament: b.filament, grams: b.grams })))}
     ${fitWarnings(lines)}
@@ -985,6 +1012,13 @@ function renderOrder() {
   const sv = $('#oSave'); if (sv) sv.onclick = () => saveOrderToHistory(lines, r);
   $('#oPdf').onclick = () => offerFromCurrentOrder();
   $('#oDeadline').onchange = (e) => { order().deadline = e.target.value || null; saveSettings(); };
+  el.querySelectorAll('[data-split]').forEach((b) => b.onclick = () => {
+    const it = order().items.find((i) => i.id === b.dataset.split); if (!it) return;
+    const prev = { qty: it.qty, copies: it.copies };
+    it.qty = +b.dataset.runs; it.copies = +b.dataset.per;
+    saveSettings(); updateOrderCount(); renderOrder();
+    toast(T('Rozłożono: {0} × {1} szt. (razem {2} szt.)', { 0: it.qty, 1: it.copies, 2: it.qty * it.copies }), false, { label: T('Cofnij'), fn: () => { Object.assign(it, prev); saveSettings(); updateOrderCount(); renderOrder(); } });
+  });
   $('#oClient').onchange = async (e) => {
     if (e.target.value === '__new') { const c = await clientModal(); order().clientId = c && c !== 'deleted' ? c.id : order().clientId; }
     else order().clientId = e.target.value || null;
@@ -1003,6 +1037,7 @@ function renderOrder() {
         const k = inp.dataset.k;
         let v = inp.value.trim();
         if (k === 'qty') { it.qty = Math.max(0, parseInt(v, 10) || 0); saveSettings(); updateOrderCount(); return renderOrder(); }
+        if (k === 'copies') { it.copies = copiesOf(v); saveSettings(); return renderOrder(); }
         if (k === 'name') { it.name = v || T('Pozycja'); saveSettings(); return; }
         const val = k === 'grams' ? (v === '' ? null : parseFloat(v.replace(',', '.'))) : k === 'minutes' ? (v === '' ? null : parseDuration(v)) : (v || null);
         if ((k === 'grams' || k === 'minutes') && v !== '' && !Number.isFinite(val)) { toast(T('Nieprawidłowa wartość'), true); return renderOrder(); }
@@ -1026,7 +1061,7 @@ async function setPrintMeta(rel, patch) {
 function orderSummaryText(lines, r) {
   const c = cur(), p = P();
   const out = [T('Wycena{0}', { 0: (order().name ? ': ' + order().name : '') }), ''];
-  for (const l of lines) if (!l.missing && l.qty > 0) out.push(`• ${l.name}${l.qty > 1 ? ` ×${l.qty}` : ''} — ${fmtNum(l.grams || 0, 0)} g, ${fmtDuration(l.minutes)} (${l.parts.map((p) => filLabel(p.filament)).filter((v, i, a) => a.indexOf(v) === i).join(' + ')})`);
+  for (const l of lines) if (!l.missing && l.qty > 0) out.push(`• ${l.name}${qtyTxt(l.qty, l.copies)} — ${fmtNum(l.grams || 0, 0)} g, ${fmtDuration(l.minutes)} (${l.parts.map((p) => filLabel(p.filament)).filter((v, i, a) => a.indexOf(v) === i).join(' + ')})`);
   out.push('', T('Filament: {0} ({1} g)', { 0: (fmtMoney(r.filament, c)), 1: (fmtNum(r.grams, 0)) }), T('Prąd: {0} ({1} kWh)', { 0: (fmtMoney(r.energy, c)), 1: (fmtNum(r.kWh, 2)) }),
     T('Eksploatacja drukarki: {0} ({1} h)', { 0: (fmtMoney(r.wear, c)), 1: (fmtNum(r.hours, 2)) }), T('Mój czas: {0} ({1} h)', { 0: (fmtMoney(r.labor, c)), 1: (fmtNum(r.laborH, 2)) }),
     T('Bufor na awarie: {0}', { 0: (fmtMoney(r.buffer, c)) }), T('Koszt: {0}', { 0: (fmtMoney(r.cost, c)) }));
@@ -1094,8 +1129,10 @@ function fitWarnings(lines) {
     if (fit && !fit.fits) msgs.push(['⤢', T('{0}: większy niż obszar roboczy drukarki {1} ({2})', { 0: l.name, 1: fit.best.printer.name, 2: overTxt(fit.best.over) })]);
     const ci = colorIssue(l.f);
     if (ci) msgs.push(['◐', `${l.name} – ${ci}`]);
+    const b = l.copies > 1 ? batchOf(l.f, l.copies) : null;
+    if (b && !b.fits) msgs.push(['▦', batchWarnText(l.name, b), l.it.id, b]);
   }
-  return msgs.length ? `<div class="stockwarn">${msgs.map(([ico, m]) => `<div>${ico} ${esc(m)}</div>`).join('')}</div>` : '';
+  return msgs.length ? `<div class="stockwarn">${msgs.map(([ico, m, id, b]) => { const sp = b && b.capacity > 0 ? splitBatch(b.copies * (lines.find((x) => x.it.id === id)?.qty || 1), b.capacity) : null; return `<div>${ico} ${esc(m)}${sp ? ` <button class="toast-btn" data-split="${esc(id)}" data-runs="${sp.runs}" data-per="${sp.perRun}">${T('Rozłóż: {0} × {1} szt.', { 0: sp.runs, 1: sp.perRun })}</button>` : ''}</div>`; }).join('')}</div>` : '';
 }
 function plateTooBig(f, pl) {
   const fit = fitOf(f);
@@ -1245,7 +1282,7 @@ function saveOrderToHistory(lines, r) {
   const o = {
     id: 'o' + Date.now().toString(36), ...no, name: order().name || T('Zamówienie {0}', { 0: (no.no) }), createdAt: Date.now(), status: 'quoted', statusAt: { quoted: Date.now() },
     clientId: order().clientId || null, clientName: (clientById(order().clientId) || {}).name || null, deadline: isDay(order().deadline) ? order().deadline : null,
-    items: valid.map((l) => ({ rel: l.it.rel || null, name: l.name, qty: l.qty, minutes: l.minutes || 0, plates: l.plates || 1,
+    items: valid.map((l) => ({ rel: l.it.rel || null, name: l.name, qty: l.qty, copies: l.copies, minutes: l.minutes || 0, plates: l.plates || 1,
       parts: l.parts.map((p) => ({ name: p.name || '', filamentId: p.filament ? p.filament.id : null, label: filLabel(p.filament), hex: p.filament ? p.filament.hex : null, grams: p.grams || 0, pricePerKg: p.filament ? p.filament.pricePerKg : 0 })) })),
     totals: { cost: r.cost, price: r.price, grams: r.grams, minutes: r.minutes, prints: r.prints, filament: r.filament, energy: r.energy, wear: r.wear, labor: r.labor, buffer: r.buffer },
     agreedPrice: null, consumedLog: null, note: '',
@@ -1282,7 +1319,7 @@ function updateOrdersCount() { const el = $('#ordersCount'); if (el && S) el.tex
 function orderToText(o) {
   const c = cur();
   const out = [T('Zamówienie {0}: {1}', { 0: (o.no), 1: (o.name) }), ''];
-  for (const it of o.items) out.push(`• ${it.name}${it.qty > 1 ? ` ×${it.qty}` : ''} — ${fmtNum(it.parts.reduce((a, p) => a + p.grams, 0), 0)} g, ${fmtDuration(it.minutes)} (${[...new Set(it.parts.map((p) => p.label))].join(' + ')})`);
+  for (const it of o.items) out.push(`• ${it.name}${qtyTxt(it.qty, it.copies)} — ${fmtNum(it.parts.reduce((a, p) => a + p.grams, 0), 0)} g, ${fmtDuration(it.minutes)} (${[...new Set(it.parts.map((p) => p.label))].join(' + ')})`);
   out.push('', T('Koszt: {0}', { 0: (fmtMoney(o.totals.cost, c)) }), T('Cena: {0}', { 0: (fmtMoney(finalPrice(o), c)) }));
   return out.join('\n');
 }
@@ -1309,7 +1346,7 @@ function renderOrders() {
       <td><select class="cell status-sel ${o.status}" data-k="status">${Object.entries(ORDER_STATUS).map(([k, v]) => `<option value="${k}" ${k === o.status ? 'selected' : ''}>${v}</option>`).join('')}</select></td>
       <td class="r nowrap"><button class="icon-btn" data-pdf title="${T('Oferta PDF')}">⎙</button><button class="icon-btn" data-load title="${T('Wczytaj do wyceny')}">↺</button><button class="icon-btn" data-copy title="${T('Kopiuj podsumowanie')}">⧉</button><button class="icon-btn" data-del title="${T('Usuń')}">✕</button></td>
     </tr>${open ? `<tr class="ord-detail"><td></td><td colspan="7">
-      ${o.items.map((it) => `<div class="od-item"><b>${esc(it.name)}</b>${it.qty > 1 ? ` ×${it.qty}` : ''} <span class="mono small">${fmtDuration(it.minutes)}</span>
+      ${o.items.map((it) => `<div class="od-item"><b>${esc(it.name)}</b>${esc(qtyTxt(it.qty, it.copies))} <span class="mono small">${fmtDuration(it.minutes)}</span>
         <span class="od-parts">${it.parts.map((p) => `<span>${swatch({ hex: p.hex })}${esc(p.label)} ${fmtNum(p.grams, 1)} g</span>`).join('')}</span></div>`).join('')}
       <div class="od-meta">${Object.entries(o.statusAt || {}).map(([k, t]) => `${ORDER_STATUS[k]}: ${fmtDate(t)}`).join(' · ')}${o.consumedLog && o.consumedLog !== 'none' ? T(' · filament odjęty z magazynu') : ''}</div>
       <textarea class="notes" data-k="note" placeholder="${T('Notatka do zamówienia (klient, termin, adres wysyłki…)')}">${esc(o.note || '')}</textarea>
@@ -1350,8 +1387,8 @@ function renderOrders() {
     tr.querySelector('[data-pdf]').onclick = () => offerFromOrder(o);
     tr.querySelector('[data-load]').onclick = () => {
       S.order = { name: o.name, clientId: o.clientId || null, items: o.items.map((it) => it.rel && lib.files.some((f) => f.rel === it.rel)
-        ? { id: 'i' + (orderSeq++).toString(36), rel: it.rel, qty: it.qty }
-        : { id: 'i' + (orderSeq++).toString(36), name: it.name, qty: it.qty, grams: it.parts.reduce((a, p) => a + p.grams, 0), minutes: it.minutes, filamentId: it.parts[0]?.filamentId || null }) };
+        ? { id: 'i' + (orderSeq++).toString(36), rel: it.rel, qty: it.qty, copies: it.copies || 1 }
+        : { id: 'i' + (orderSeq++).toString(36), name: it.name, qty: it.qty, copies: it.copies || 1, grams: it.parts.reduce((a, p) => a + p.grams, 0) / (it.copies || 1), minutes: it.minutes / (it.copies || 1), filamentId: it.parts[0]?.filamentId || null }) };
       saveSettings(); updateOrderCount(); setView({ special: 'order' });
       toast(T('Wczytano {0} do wyceny', { 0: (o.no) }));
     };
@@ -1572,7 +1609,7 @@ async function buildOfferHtml({ no, name, client, items, total, cost, createdAt 
       ${items.map((it, i) => `<tr><td class="th">${thumbsHtml[i] ? `<img src="${thumbsHtml[i]}">` : '<div></div>'}</td>
         <td class="nm"><b>${e(it.name)}</b><small>${it.plates > 1 ? T('{0} płyty · ', { 0: (it.plates) }) : ''}${fmtNum(it.parts.reduce((a, p) => a + (p.grams || 0), 0), 0)} g · ${fmtDuration(it.minutes)}</small></td>
         <td>${[...new Set(it.parts.map((p) => p.filament ? `${p.filament.type || ''} ${p.filament.color}`.trim() : ''))].filter(Boolean).map(e).join(', ')}</td>
-        <td class="r">${T('{0} szt.', { 0: (it.qty) })}</td>${b.showItemPrices ? `<td class="r">${fmtMoney(prices[i], c)}</td>` : ''}</tr>`).join('')}
+        <td class="r">${T('{0} szt.', { 0: (it.qty * (it.copies || 1)) })}</td>${b.showItemPrices ? `<td class="r">${fmtMoney(prices[i], c)}</td>` : ''}</tr>`).join('')}
     </tbody></table>
     <div class="sum"><div><span>${T('Razem')}</span><span>${fmtMoney(total, c)}</span></div></div>
     ${b.bank ? `<div class="notes">${T('Płatność: {0}', { 0: (e(b.bank)) })}</div>` : ''}
@@ -1583,13 +1620,13 @@ async function offerFromCurrentOrder() {
   const lines = orderLines().filter((l) => !l.missing && l.qty > 0);
   if (!lines.length) return toast(T('Wycena jest pusta'), true);
   const r = priceItems(lines.map(lineItem), P());
-  const html = await buildOfferHtml({ no: null, name: order().name, client: clientById(order().clientId), items: lines.map((l) => ({ rel: l.f ? l.f.rel : null, name: l.name, qty: l.qty, minutes: l.minutes || 0, plates: l.plates || 1, parts: l.parts.map((p) => ({ grams: p.grams || 0, filament: p.filament })) })), total: P().margin > 0 || P().roundTo > 0 ? r.price : r.cost, cost: r.cost });
+  const html = await buildOfferHtml({ no: null, name: order().name, client: clientById(order().clientId), items: lines.map((l) => ({ rel: l.f ? l.f.rel : null, name: l.name, qty: l.qty, copies: l.copies, minutes: l.minutes || 0, plates: l.plates || 1, parts: l.parts.map((p) => ({ grams: p.grams || 0, filament: p.filament })) })), total: P().margin > 0 || P().roundTo > 0 ? r.price : r.cost, cost: r.cost });
   const p = await safe(() => api.savePdf(html, T('Oferta - {0}.pdf', { 0: ((order().name || T('wycena')).replace(/[\\/:*?"<>|]/g, '_')) })));
   if (p) toast(T('Zapisano ofertę PDF'));
 }
 async function offerFromOrder(o) {
   const html = await buildOfferHtml({ no: o.no, name: o.name, client: clientById(o.clientId) || (o.clientName ? { name: o.clientName } : null), createdAt: o.createdAt,
-    items: o.items.map((it) => ({ rel: it.rel && lib && lib.files.some((f) => f.rel === it.rel) ? it.rel : null, name: it.name, qty: it.qty, minutes: it.minutes, plates: it.plates || 1, parts: it.parts.map((p) => ({ grams: p.grams, filament: filamentById(p.filamentId) || { id: p.filamentId, pricePerKg: p.pricePerKg, color: p.label, type: '' } })) })),
+    items: o.items.map((it) => ({ rel: it.rel && lib && lib.files.some((f) => f.rel === it.rel) ? it.rel : null, name: it.name, qty: it.qty, copies: it.copies || 1, minutes: it.minutes, plates: it.plates || 1, parts: it.parts.map((p) => ({ grams: p.grams, filament: filamentById(p.filamentId) || { id: p.filamentId, pricePerKg: p.pricePerKg, color: p.label, type: '' } })) })),
     total: finalPrice(o), cost: o.totals.cost });
   const p = await safe(() => api.savePdf(html, T('Oferta {0} - {1}.pdf', { 0: (o.no.replace('/', '-')), 1: (o.name.replace(/[\\/:*?"<>|]/g, '_')) })));
   if (p) toast(T('Zapisano ofertę PDF'));
@@ -2230,7 +2267,9 @@ function tabPrinters(body) {
       <p class="hint">${T('System wielomateriałowy (AMS, MMU, CFS…) określa, ile kolorów drukarka zmieni sama. Modele z większą liczbą kolorów dostaną ostrzeżenie.')}</p>
       ${printersEditorHtml()}
       <p class="hint">${T('Wymiary z biblioteki pochodzą ze specyfikacji producentów. Jeśli Twoja drukarka ma inny stół (np. po modyfikacji), popraw liczby w tabeli.')}</p>
-      <label class="check"><input type="checkbox" id="pVol" ${S.appearance.showBuildVolume ? 'checked' : ''}> ${T('Pokazuj obrys obszaru roboczego w podglądzie 3D')}</label>`;
+      <label class="check"><input type="checkbox" id="pVol" ${S.appearance.showBuildVolume ? 'checked' : ''}> ${T('Pokazuj obrys obszaru roboczego w podglądzie 3D')}</label>
+      <div class="fields"><label class="fld"><span>${T('Odstęp między sztukami przy liczeniu, ile zmieści się na płycie')}</span><span class="inp"><input type="number" id="pGap" min="0" max="50" step="0.5" value="${P().arrangeGap ?? 5}"><em>mm</em></span></label></div>`;
+    body.querySelector('#pGap').onchange = (e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v) && v >= 0 && v <= 50) { P().arrangeGap = v; printersChanged(); } else e.target.value = P().arrangeGap ?? 5; };
     bindPrintersEditor(body, (kind) => { printersChanged(); if (kind !== 'value') draw(); });
     body.querySelector('#pVol').onchange = (e) => { S.appearance.showBuildVolume = e.target.checked; saveSettings(); const f = lib && lib.files.find((x) => x.rel === focused); if (f) applyBuildVolume(f); };
   };
@@ -2722,8 +2761,14 @@ function srcTxt(x) { if (!x) return ''; if (x === 'ręcznie') return T('wpisane 
 function pricingSectionHtml(f) {
   const d = printData(f);
   const has = d.grams != null;
-  const r = has ? priceItems([{ parts: d.parts.map((p) => ({ grams: p.grams || 0, filament: p.filament })), minutes: d.minutes || 0, qty: 1, plates: d.plates }], P()) : null;
   const manual = metaOf(f.rel).print || {};
+  const copies = copiesOf(manual.copies);
+  const r = has ? priceItems([{ parts: d.parts.map((p) => ({ grams: (p.grams || 0) * copies, filament: p.filament })), minutes: (d.minutes || 0) * copies, qty: 1, plates: d.plates }], P()) : null;
+  const b = batchOf(f, copies);
+  const batchHtml = `<div class="prow batch"><span>${T('Sztuk na jednej płycie')}</span><input id="pCopies" class="field sm" type="number" min="1" step="1" value="${copies}">
+      ${b ? `<small class="${b.fits ? 'ok' : 'bad'}">${b.tooTall || !b.capacity ? T('nie mieści się na płycie') : T('max {0} szt. ({1} × {2}) na {3}', { 0: b.capacity, 1: b.cols, 2: b.rows, 3: printerTitle(b.printer) })}</small>` : ''}</div>
+    ${b && !b.fits && b.capacity > 0 ? `<div class="stockwarn">▦ ${esc(T('Ustawiono {0} szt., a na płycie zmieści się {1} – potrzebne płyty: {2}.', { 0: copies, 1: b.capacity, 2: b.platesNeeded }))}</div>` : ''}
+    ${copies > 1 && has ? `<div class="phint">${esc(T('Partia {0} szt.: {1} · {2} · {3} za sztukę', { 0: copies, 1: fmtNum(r.grams, 0) + ' g', 2: fmtDuration(r.minutes), 3: fmtMoney((P().margin > 0 || P().roundTo > 0 ? r.price : r.cost) / copies, cur()) }))}</div>` : ''}`;
   const c = cur();
   let slotsHtml;
   if (!d.multi) {
@@ -2748,7 +2793,7 @@ function pricingSectionHtml(f) {
   }
   const hint = [d.gramsSrc && T('gramy: {0}', { 0: srcTxt(d.gramsSrc) }), d.minutesSrc && T('czas: {0}', { 0: srcTxt(d.minutesSrc) })].filter(Boolean).join(' · ');
   const est = d.gramsSrc === 'szacunek' || d.gramsSrc === 'mieszane';
-  const stockWarn = has ? stockWarnings(d.parts.map((p) => ({ filament: p.filament, grams: p.grams || 0 }))) : '';
+  const stockWarn = has ? stockWarnings(d.parts.map((p) => ({ filament: p.filament, grams: (p.grams || 0) * copiesOf((metaOf(f.rel).print || {}).copies) }))) : '';
   const platesHtml = d.plates > 1 ? `<div class="plates-box"><div class="mc-head"><span>${T('{0} płyty w pliku', { 0: (d.plates) })}</span><small>${T('każda płyta = osobny wydruk')}</small></div>
       ${d.plateList.map((pl) => `<div class="plate-row ${plateTooBig(f, pl) ? 'big' : ''}" data-plate="${pl.index}" ${plateTooBig(f, pl) ? `title="${T('Ta płyta nie mieści się na żadnej z Twoich drukarek')}"` : ''}><b>${T('Płyta {0}', { 0: (pl.id) })}</b><span>${fmtNum(pl.x, 0)} × ${fmtNum(pl.y, 0)} × ${fmtNum(pl.z, 0)} mm</span><span>${pl.grams != null ? fmtNum(pl.grams, 1) + ' g' : fmtNum(pl.volume, 1) + ' cm³'}</span><span>${pl.minutes != null ? fmtDuration(pl.minutes) : ''}</span></div>`).join('')}</div>` : '';
   return `<div class="label">${T('Wycena')} <button class="linkbtn" id="pSet">${T('ustawienia')}</button></div>
@@ -2756,6 +2801,7 @@ function pricingSectionHtml(f) {
       ${platesHtml}
       ${slotsHtml}
       ${hint ? `<div class="phint ${est ? 'est' : ''}">${esc(hint)}${d.gramsSrc === 'szacunek' ? T(' — dla dokładnej wyceny potnij model w slicerze') : ''}</div>` : ''}
+      ${batchHtml}
       ${stockWarn}
       ${has ? breakdownHtml(r) + `<div class="phint">${T('jako osobne zamówienie (z czasem na kontakt i pakowanie)')}</div>`
         : `<div class="phint">${(ls.get(statsKey(f), null) || {}).failed ? T('Nie udało się odczytać modelu, więc nie policzę objętości. Wpisz gramy i czas ze slicera.') : f.viewable && f.ext !== 'gcode' ? T('Liczenie objętości…') : T('Brak danych — wpisz gramy i czas ze slicera.')}</div>`}
@@ -2773,6 +2819,8 @@ function bindPricingSection(f) {
   $('#pSet').onclick = () => openSettings('pricing');
   document.querySelectorAll('#detailBody .plate-row').forEach((row) => row.onclick = () => { const k = +row.dataset.plate; setPlateView(viewPlate === k ? null : k); });
   $('#pAdd').onclick = () => addToOrder([rel]);
+  const pc = $('#pCopies');
+  if (pc) { pc.onchange = async () => { await setPrintMeta(rel, { copies: copiesOf(pc.value) > 1 ? copiesOf(pc.value) : null }); after(); if (viewer.currentRel === f.rel + f.mtime) applyBatchView(f); }; pc.onkeydown = (e) => { if (e.key === 'Enter') pc.dispatchEvent(new Event('change')); }; }
   document.querySelectorAll('#detailBody select[data-slot]').forEach((sel) => sel.onchange = async () => {
     const i = +sel.dataset.slot, v = sel.value || null;
     const d = printData(f);
@@ -2840,7 +2888,7 @@ async function loadPreview(f) {
     try { storeParsedAnalysis(f, parsed); } catch (e) { console.warn(e); }
     viewer.show(parsed);
     viewer.setSlotColors(slotColors(f));
-    applyBuildVolume(f);
+    applyBatchView(f);
     if (parsed.warnings && parsed.warnings.length) toast(parsed.warnings.join(' '), true);
     viewPlate = null;
     const vp = $('#vPlate');
@@ -2861,6 +2909,16 @@ async function loadPreview(f) {
 }
 
 let viewPlate = null;
+/** Partia w podglądzie 3D: przy kilku sztukach na płycie pokazuje ich rozmieszczenie na stole drukarki. */
+function applyBatchView(f) {
+  if (!viewer || !viewer.holder) return;
+  const copies = copiesOf((metaOf(f.rel).print || {}).copies);
+  const stt = fileStats(f);
+  const b = copies > 1 && stt && !(stt.plates && stt.plates.length > 1) ? batchOf(f, copies) : null;
+  if (!b || !b.capacity) { viewer.clearBatch(); applyBuildVolume(f); return; }
+  viewer.setBuildVolume(null);
+  viewer.showBatch(plateLayout({ x: stt.x, y: stt.y, z: stt.z }, b.printer, P().arrangeGap ?? 5), b.printer, copies);
+}
 /** Pokazuje w podglądzie obrys obszaru roboczego drukarki (czerwony, gdy model się nie mieści). */
 function applyBuildVolume(f) {
   const fit = fitOf(f);

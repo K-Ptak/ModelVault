@@ -102,6 +102,7 @@ const DEFAULT_SETTINGS = {
     purgePerChange: 0.6,    // g filamentu wyrzucanego przy jednej zmianie koloru (purge + wieża)
     changeTimeSec: 45,      // s na jedną zmianę koloru
     paintWall: 0.8,         // mm – grubość „skóry” malowanego koloru
+    arrangeGap: 5,          // mm – odstęp między sztukami przy liczeniu, ile zmieści się na płycie
   },
   stock: {
     lowThreshold: 150,          // g – ostrzeżenie o kończącej się szpuli

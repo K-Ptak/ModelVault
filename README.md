@@ -62,6 +62,7 @@ so everything keeps working in File Explorer, and the app picks up changes as th
 - **Slicer data:** grams and time from G-code (PrusaSlicer, OrcaSlicer, Bambu Studio, Cura) and from sliced 3MF files, per filament and including purge. Without slicer data, an estimate is made from the model's volume.
 - **Several spools per model:** one spool per colour, matched automatically to the colours in the file. Colour changes, purge and change time are estimated.
 - **Order quotes** combining many models and manual items, with CSV export and a copyable summary.
+- **Batches – many pieces on one plate:** set e.g. 30 pieces per plate and ModelVault sums filament, time and cost (handling and warm-up are counted once per plate, so a batch is cheaper than separate prints) and works out how many pieces fit on your printer's bed with a configurable spacing. If you ask for more than fits (e.g. 40 when only 32 fit), you get a red warning with the number of plates needed and a one-click split into equal prints. The 3D preview shows the layout on the bed, with the overflow on a red second plate.
 
 ### 📦 Orders, clients and stock
 - **Order history:** numbering, statuses (quoted → printing → delivered), the price agreed with the client, and notes.

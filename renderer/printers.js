@@ -142,3 +142,90 @@ export function checkColors(colors, printers) {
   for (const pr of printers) { const n = printerSlots(pr); if (n > maxSlots) { maxSlots = n; best = pr; } }
   return { ok: maxSlots >= colors, maxSlots, best, manual: maxSlots <= 1 };
 }
+
+// ---------- wiele sztuk na jednej płycie ----------
+/** Ile prostokątów a × b (z odstępem gap) zmieści się w obszarze W × D w siatce, plus pas z resztą w drugiej orientacji. */
+function gridFill(W, D, a, b, gap) {
+  const n = (len, s) => (s > len + 1e-6 ? 0 : Math.floor((len + gap + 1e-6) / (s + gap)));
+  const cols = n(W, a), rows = n(D, b);
+  let best = { count: cols * rows, cols, rows };
+  if (!cols || !rows) best = { count: 0, cols: 0, rows: 0 };
+  // reszta po prawej (szerokość W - cols·(a+gap)) – części obrócone o 90°
+  const restW = W - cols * (a + gap);
+  const extraR = restW > 0 ? n(restW, b) * n(D, a) : 0;
+  // reszta z tyłu (głębokość D - rows·(b+gap))
+  const restD = D - rows * (b + gap);
+  const extraB = restD > 0 ? n(W, b) * n(restD, a) : 0;
+  return { ...best, count: best.count + Math.max(extraR, extraB) };
+}
+
+/**
+ * Ile sztuk elementu o wymiarach {x, y, z} zmieści się na stole {x, y, z} z odstępem `gap` mm.
+ * Sprawdza obie orientacje (obrót o 90°) i dokłada części w wolny pas. To szacunek – slicer
+ * z rozmieszczaniem obróconym pod dowolnym kątem może upakować trochę więcej.
+ */
+export function plateCapacity(dims, bed, gap = 5) {
+  if (!dims || !bed || ![dims.x, dims.y, dims.z, bed.x, bed.y, bed.z].every((v) => Number.isFinite(v) && v >= 0)) return null;
+  if (dims.x <= 0 || dims.y <= 0) return null;
+  if (dims.z > bed.z + 0.5) return { count: 0, cols: 0, rows: 0, tooTall: true };
+  const g = Math.max(0, Number(gap) || 0);
+  const a = gridFill(bed.x, bed.y, dims.x, dims.y, g);
+  const b = gridFill(bed.x, bed.y, dims.y, dims.x, g);
+  const r = b.count > a.count ? { ...b, rotated: true } : { ...a, rotated: false };
+  return r;
+}
+
+/**
+ * Sprawdza partię `copies` sztuk na jednej płycie względem drukarek użytkownika.
+ * Dla pliku wielopłytowego liczy się najciaśniejsza płyta. Zwraca null bez danych/drukarek, inaczej
+ * { capacity, printer, fits, platesNeeded, cols, rows, tooTall }.
+ */
+export function checkBatch(stats, copies, printers, gap = 5) {
+  if (!stats || !Array.isArray(printers) || !printers.length) return null;
+  const parts = stats.plates && stats.plates.length > 1 ? stats.plates : [stats];
+  let best = null;
+  for (const pr of printers) {
+    let cap = Infinity, grid = null, tall = false;
+    for (const p of parts) {
+      const c = plateCapacity({ x: p.x, y: p.y, z: p.z }, pr, gap);
+      if (!c) { cap = -1; break; }
+      if (c.count < cap) { cap = c.count; grid = c; }
+      if (c.tooTall) tall = true;
+    }
+    if (cap < 0) continue;
+    if (!best || cap > best.capacity) best = { capacity: cap, printer: pr, cols: grid.cols, rows: grid.rows, tooTall: tall };
+  }
+  if (!best) return null;
+  const n = Math.max(1, Math.round(Number(copies) || 1));
+  return { ...best, copies: n, fits: best.capacity >= n, platesNeeded: best.capacity > 0 ? Math.ceil(n / best.capacity) : Infinity };
+}
+
+/** Podział `total` sztuk na równe wydruki mieszczące się na płycie: { runs, perRun } (perRun ≤ capacity). */
+export function splitBatch(total, capacity) {
+  const n = Math.max(1, Math.round(Number(total) || 1));
+  if (!(capacity > 0)) return null;
+  const runs = Math.ceil(n / capacity);
+  return { runs, perRun: Math.ceil(n / runs) };
+}
+
+/**
+ * Rozmieszczenie sztuk na stole (do podglądu 3D) zgodne z plateCapacity:
+ * lista środków { x, y, rot } w mm, licząc od rogu stołu; rot = obrót o 90°.
+ */
+export function plateLayout(dims, bed, gap = 5) {
+  const cap = plateCapacity(dims, bed, gap);
+  if (!cap || !cap.count) return [];
+  const g = Math.max(0, Number(gap) || 0);
+  const n = (len, s) => (s > len + 1e-6 ? 0 : Math.floor((len + g + 1e-6) / (s + g)));
+  const grid = (ox, oy, W, D, a, b, rot) => { const out = []; const c = n(W, a), r = n(D, b); for (let j = 0; j < r; j++) for (let i = 0; i < c; i++) out.push({ x: ox + i * (a + g) + a / 2, y: oy + j * (b + g) + b / 2, rot }); return out; };
+  const variant = (a, b, rot) => {
+    const main = grid(0, 0, bed.x, bed.y, a, b, rot);
+    const cols = n(bed.x, a), rows = n(bed.y, b);
+    const ox = cols * (a + g), oy = rows * (b + g);
+    const right = bed.x - ox > 0 ? grid(ox, 0, bed.x - ox, bed.y, b, a, !rot) : [];
+    const back = bed.y - oy > 0 ? grid(0, oy, bed.x, bed.y - oy, b, a, !rot) : [];
+    return main.concat(right.length >= back.length ? right : back);
+  };
+  const v1 = variant(dims.x, dims.y, false), v2 = variant(dims.y, dims.x, true);
+  return v2.length > v1.length ? v2 : v1;
+}
